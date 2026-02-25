@@ -1,0 +1,12 @@
+# trash files
+__pycache__
+*.log
+.ruff_cache
+.vscode
+
+# environments
+venv
+.venv
+
+# data(db,...) files
+data

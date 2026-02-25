@@ -1,0 +1,12 @@
+ruff
+authx
+httpx
+PyYAML
+pytest
+pydantic
+aiosqlite
+asyncio
+sqlalchemy
+supervisor
+pytest-asyncio
+fastapi[standard]

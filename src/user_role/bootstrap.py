@@ -1,0 +1,73 @@
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.i18n.permission import get_i18n_role_permission_defaults
+from src.user_role.defaults import DEFAULT_ROLES
+from src.user_role.permission import RBACService, get_rbac_role_permission_defaults
+
+
+def get_default_role_permissions(role_name: str) -> dict[str, bool]:
+    permissions: dict[str, bool] = {}
+    permissions.update(get_i18n_role_permission_defaults(role_name))
+    permissions.update(get_rbac_role_permission_defaults(role_name))
+    return permissions
+
+
+RBAC_SERVICE = RBACService(
+    {
+        role_name: get_default_role_permissions(role_name)
+        for _, role_name, _ in DEFAULT_ROLES
+    }
+)
+
+
+async def seed_roles_if_missing(session: AsyncSession) -> int:
+    """
+    Seed default roles if they do not already exist.
+    Returns the number of roles created.
+    """
+    from src.user_role.models import Role
+
+    # Fetch all roles at once
+    result = await session.execute(select(Role))
+    existing_roles = list(result.scalars())
+
+    # Use both ID and name as lookup keys for existence
+    by_id = {role.id: role for role in existing_roles}
+    by_name = {role.name: role for role in existing_roles}
+
+    created = 0
+    roles_to_update = []
+    roles_to_add = []
+
+    for role_id, role_name, role_title_key in DEFAULT_ROLES:
+        existing = by_id.get(role_id) or by_name.get(role_name)
+        if existing:
+            # Only update title_key if it's missing or falsy
+            if not getattr(existing, "title_key", None):
+                existing.title_key = role_title_key
+                roles_to_update.append(existing)
+            continue
+
+        roles_to_add.append(
+            Role(
+                id=role_id,
+                name=role_name,
+                title_key=role_title_key,
+                permissions=RBAC_SERVICE.get_default_role_permissions(role_name),
+            )
+        )
+        created += 1
+
+    # Bulk add and update outside of loop for efficiency
+    if roles_to_add:
+        session.add_all(roles_to_add)
+    if roles_to_update:
+        session.add_all(roles_to_update)
+
+    if roles_to_add or roles_to_update or session.dirty:
+        await session.commit()
+
+    await RBAC_SERVICE.init_role_permissions_if_missing(session)
+
+    return created
