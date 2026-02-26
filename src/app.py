@@ -9,6 +9,7 @@ from src.api import all_routes
 from src.auth.dependencies import require_access_token_payload
 from src.runtime import RuntimeContext, get_default_runtime
 from src.startup import lifespan
+from src.utils.inprocess_http import attach_inprocess_http
 
 
 def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
@@ -29,6 +30,7 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
     )
 
     app.include_router(all_routes)
+    attach_inprocess_http(app)
     runtime.security.handle_errors(app)
 
     @app.exception_handler(authx_exceptions.JWTDecodeError)

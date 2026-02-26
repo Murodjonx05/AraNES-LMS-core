@@ -16,15 +16,17 @@ async def get_current_user_with_role(
     if not username:
         raise HTTPException(status_code=401, detail="Invalid token subject")
 
-    result = await session.execute(select(User).where(User.username == username))
-    user = result.scalar_one_or_none()
-    if user is None:
+    # Single round-trip instead of fetching user and role separately on every protected request.
+    result = await session.execute(
+        select(User, Role)
+        .join(Role, Role.id == User.role_id)
+        .where(User.username == username)
+        .limit(1)
+    )
+    row = result.first()
+    if row is None:
         raise HTTPException(status_code=401, detail="User not found")
-
-    role = await session.get(Role, user.role_id)
-    if role is None:
-        raise HTTPException(status_code=403, detail="Role not found")
-
+    user, role = row
     return user, role
 
 

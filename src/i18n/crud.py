@@ -42,15 +42,14 @@ async def upsert_small(
     db_small_translation = await get_small_optional(session, key)
     if db_small_translation is None:
         db_small_translation = TranslateTitle(key=key, title=dict(translation_patch))
+        session.add(db_small_translation)
     else:
         db_small_translation.title = _merge_translation_patch(
             db_small_translation.title,
             translation_patch,
         )
 
-    session.add(db_small_translation)
     await session.commit()
-    await session.refresh(db_small_translation)
     return db_small_translation
 
 
@@ -110,15 +109,14 @@ async def upsert_large(
             key2=key2,
             description=dict(translation_patch),
         )
+        session.add(db_large_translation)
     else:
         db_large_translation.description = _merge_translation_patch(
             db_large_translation.description,
             translation_patch,
         )
 
-    session.add(db_large_translation)
     await session.commit()
-    await session.refresh(db_large_translation)
     return db_large_translation
 
 

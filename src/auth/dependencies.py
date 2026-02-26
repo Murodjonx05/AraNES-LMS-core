@@ -9,6 +9,7 @@ from src.runtime import RuntimeContext, get_default_runtime
 
 _ACCESS_TOKEN_PAYLOAD_STATE_KEY = "_access_token_payload"
 _REQUEST_ACCESS_TOKEN_STATE_KEY = "_request_access_token"
+_ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY = "_access_token_required_dependency"
 
 
 def get_runtime_from_request(request: Request) -> RuntimeContext:
@@ -17,6 +18,27 @@ def get_runtime_from_request(request: Request) -> RuntimeContext:
 
 def get_security_from_request(request: Request):
     return get_runtime_from_request(request).security
+
+
+def _get_access_token_required_dependency(request: Request):
+    app_state = getattr(request.app, "state", None)
+    cached_dependency = (
+        getattr(app_state, _ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY, None)
+        if app_state is not None
+        else None
+    )
+    if cached_dependency is not None:
+        return cached_dependency
+
+    security = get_security_from_request(request)
+    dependency = security.token_required(
+        type="access",
+        verify_csrf=False,
+        locations=["headers"],
+    )
+    if app_state is not None:
+        setattr(app_state, _ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY, dependency)
+    return dependency
 
 
 async def get_request_access_token(request: Request) -> RequestToken:
@@ -33,12 +55,7 @@ async def require_access_token_payload(request: Request) -> Any:
     cached_payload = getattr(request.state, _ACCESS_TOKEN_PAYLOAD_STATE_KEY, None)
     if cached_payload is not None:
         return cached_payload
-    security = get_security_from_request(request)
-    dependency = security.token_required(
-        type="access",
-        verify_csrf=False,
-        locations=["headers"],
-    )
+    dependency = _get_access_token_required_dependency(request)
     payload = await dependency(request)
     setattr(request.state, _ACCESS_TOKEN_PAYLOAD_STATE_KEY, payload)
     return payload

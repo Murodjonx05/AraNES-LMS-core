@@ -4,6 +4,7 @@ import os
 import shutil
 import asyncio
 import hashlib
+import sqlite3
 import uuid
 from pathlib import Path
 from typing import AsyncIterator
@@ -16,6 +17,7 @@ from alembic.config import Config
 
 TEST_JWT_SECRET = "test-secret-key-with-32-byte-minimum!!"
 TEST_CORS_ORIGIN = "http://testserver"
+TEST_PBKDF2_ITERATIONS = "100"
 
 
 def _integration_template_cache_key(repo_root: Path) -> str:
@@ -47,6 +49,27 @@ def _integration_template_cache_dir(repo_root: Path) -> Path:
     return repo_root / ".pytest_cache" / "integration_db_templates" / key
 
 
+def _has_superuser_seed(db_path: Path) -> bool:
+    if not db_path.exists():
+        return False
+    try:
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        # Table is named `users` in current migrations.
+        row = cur.execute(
+            "SELECT 1 FROM users WHERE username = ? LIMIT 1",
+            ("superuser",),
+        ).fetchone()
+        return row is not None
+    except sqlite3.Error:
+        return False
+    finally:
+        try:
+            con.close()  # type: ignore[name-defined]
+        except Exception:
+            pass
+
+
 @pytest.fixture(scope="session")
 def migrated_db_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """
@@ -57,17 +80,24 @@ def migrated_db_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     cache_dir = _integration_template_cache_dir(repo_root)
     cache_dir.mkdir(parents=True, exist_ok=True)
     template_db_path = cache_dir / "template.sqlite3"
+    tmp_template_db_path = cache_dir / f"template.{uuid.uuid4().hex}.tmp.sqlite3"
 
     if template_db_path.exists():
         return template_db_path
 
     os.environ["JWT_SECRET_KEY"] = TEST_JWT_SECRET
-    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{template_db_path}"
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{tmp_template_db_path}"
     os.environ["CORS_ALLOW_ORIGINS"] = TEST_CORS_ORIGIN
     os.environ["CORS_ALLOW_CREDENTIALS"] = "false"
+    os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
 
     alembic_cfg = Config(str(repo_root / "alembic.ini"))
-    command.upgrade(alembic_cfg, "head")
+    try:
+        command.upgrade(alembic_cfg, "head")
+        tmp_template_db_path.replace(template_db_path)
+    finally:
+        if tmp_template_db_path.exists():
+            tmp_template_db_path.unlink()
     return template_db_path
 
 
@@ -78,14 +108,18 @@ def seeded_db_template(migrated_db_template: Path) -> Path:
     Per-test fixtures will copy this DB and can skip lifespan startup for speed.
     """
     seeded_db_path = migrated_db_template.with_name("template-seeded.sqlite3")
-    if seeded_db_path.exists():
+    if _has_superuser_seed(seeded_db_path):
         return seeded_db_path
-    shutil.copy2(migrated_db_template, seeded_db_path)
+    if seeded_db_path.exists():
+        seeded_db_path.unlink()
+    tmp_seeded_db_path = seeded_db_path.with_name(f"template-seeded.{uuid.uuid4().hex}.tmp.sqlite3")
+    shutil.copy2(migrated_db_template, tmp_seeded_db_path)
 
     os.environ["JWT_SECRET_KEY"] = TEST_JWT_SECRET
-    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{seeded_db_path}"
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{tmp_seeded_db_path}"
     os.environ["CORS_ALLOW_ORIGINS"] = TEST_CORS_ORIGIN
     os.environ["CORS_ALLOW_CREDENTIALS"] = "false"
+    os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
     os.environ["BOOTSTRAP_SUPERUSER_CREATE"] = "true"
     os.environ["BOOTSTRAP_SUPERUSER_USERNAME"] = "superuser"
     os.environ["BOOTSTRAP_SUPERUSER_PASSWORD"] = "superuser11"
@@ -104,7 +138,14 @@ def seeded_db_template(migrated_db_template: Path) -> Path:
             await runtime.engine.dispose()
             reset_default_runtime()
 
-    asyncio.run(_seed_once())
+    try:
+        asyncio.run(_seed_once())
+        if not _has_superuser_seed(tmp_seeded_db_path):
+            raise RuntimeError("Seeded integration DB template was created without superuser.")
+        tmp_seeded_db_path.replace(seeded_db_path)
+    finally:
+        if tmp_seeded_db_path.exists():
+            tmp_seeded_db_path.unlink()
     return seeded_db_path
 
 
@@ -121,6 +162,7 @@ async def client(
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setenv("CORS_ALLOW_ORIGINS", TEST_CORS_ORIGIN)
     monkeypatch.setenv("CORS_ALLOW_CREDENTIALS", "false")
+    monkeypatch.setenv("PBKDF2_ITERATIONS", TEST_PBKDF2_ITERATIONS)
     # DB template is already seeded and includes the superuser.
     monkeypatch.setenv("BOOTSTRAP_SUPERUSER_CREATE", "false")
     monkeypatch.setenv("BOOTSTRAP_SUPERUSER_USERNAME", "superuser")
@@ -129,6 +171,7 @@ async def client(
     from src.runtime import build_runtime, reset_default_runtime
     from src.config import build_app_config
     from src.app import create_app
+    from src.utils.inprocess_http import close_inprocess_http
 
     reset_default_runtime()
     runtime = build_runtime(build_app_config())
@@ -140,6 +183,7 @@ async def client(
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
             yield c
     finally:
+        await close_inprocess_http(app)
         await runtime.engine.dispose()
         reset_default_runtime()
 
@@ -161,6 +205,7 @@ async def unauth_client(
     os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
     os.environ["CORS_ALLOW_ORIGINS"] = TEST_CORS_ORIGIN
     os.environ["CORS_ALLOW_CREDENTIALS"] = "false"
+    os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
     os.environ["BOOTSTRAP_SUPERUSER_CREATE"] = "false"
     os.environ["BOOTSTRAP_SUPERUSER_USERNAME"] = "superuser"
     os.environ["BOOTSTRAP_SUPERUSER_PASSWORD"] = "superuser11"
@@ -168,6 +213,7 @@ async def unauth_client(
     from src.runtime import build_runtime, reset_default_runtime
     from src.config import build_app_config
     from src.app import create_app
+    from src.utils.inprocess_http import close_inprocess_http
 
     reset_default_runtime()
     runtime = build_runtime(build_app_config())
@@ -178,6 +224,7 @@ async def unauth_client(
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
             yield c
     finally:
+        await close_inprocess_http(app)
         await runtime.engine.dispose()
         reset_default_runtime()
 

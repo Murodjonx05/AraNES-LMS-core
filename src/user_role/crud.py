@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from src.auth.exceptions import UsernameAlreadyExistsError
 from src.auth.service import hash_password
@@ -56,7 +57,11 @@ async def _get_user_by_username(session: AsyncSession, username: str) -> User | 
 
 # Roles CRUD
 async def list_roles(session: AsyncSession) -> list[Role]:
-    query_result = await session.execute(select(Role))
+    query_result = await session.execute(
+        select(Role).options(
+            load_only(Role.id, Role.name, Role.title_key, Role.permissions)
+        )
+    )
     return list(query_result.scalars().all())
 
 
@@ -79,8 +84,8 @@ async def create_role(
 
     db_role = Role(name=name, title_key=title_key, permissions={})
     session.add(db_role)
+    await session.flush()
     await session.commit()
-    await session.refresh(db_role)
     return db_role
 
 
@@ -103,9 +108,7 @@ async def update_role(
     if title_key is not None:
         db_role.title_key = title_key
 
-    session.add(db_role)
     await session.commit()
-    await session.refresh(db_role)
     return db_role
 
 
@@ -140,30 +143,27 @@ async def patch_role_permissions(
         raise SuperAdminRoleImmutableError("SuperAdmin role permissions are immutable")
 
     db_role.permissions = _merge_permission_patch(db_role.permissions, permission_patch)
-    session.add(db_role)
     await session.commit()
-    await session.refresh(db_role)
     return db_role
 
 
 async def reset_role_permissions(session: AsyncSession) -> int:
-    db_roles = await list_roles(session)
-    updated_count = 0
-
-    for db_role in db_roles:
-        if is_superadmin_role(db_role):
-            continue
-        db_role.permissions = {}
-        session.add(db_role)
-        updated_count += 1
-
+    filter_clause = (Role.id != SUPERADMIN_ROLE_ID) & (Role.name != SUPERADMIN_ROLE_NAME)
+    updated_count = int(
+        (await session.scalar(select(func.count()).select_from(Role).where(filter_clause))) or 0
+    )
+    if updated_count == 0:
+        return 0
+    await session.execute(update(Role).where(filter_clause).values(permissions={}))
     await session.commit()
     return updated_count
 
 
 # Users CRUD
 async def list_users(session: AsyncSession) -> list[User]:
-    query_result = await session.execute(select(User))
+    query_result = await session.execute(
+        select(User).options(load_only(User.id, User.username, User.role_id, User.permissions))
+    )
     return list(query_result.scalars().all())
 
 
@@ -194,8 +194,8 @@ async def create_user_admin(
         permissions={},
     )
     session.add(db_user)
+    await session.flush()
     await session.commit()
-    await session.refresh(db_user)
     return db_user
 
 
@@ -219,9 +219,7 @@ async def update_user_admin(
             raise RoleNotFoundError("Role not found")
         db_user.role_id = role_id
 
-    session.add(db_user)
     await session.commit()
-    await session.refresh(db_user)
     return db_user
 
 
@@ -233,9 +231,7 @@ async def set_user_password_admin(
 ) -> User:
     db_user = await get_user_by_id(session, user_id)
     db_user.password = hash_password(password)
-    session.add(db_user)
     await session.commit()
-    await session.refresh(db_user)
     return db_user
 
 
@@ -258,20 +254,17 @@ async def patch_user_permissions(
         raise UserNotFoundError("User not found")
 
     db_user.permissions = _merge_permission_patch(db_user.permissions, permission_patch)
-    session.add(db_user)
     await session.commit()
-    await session.refresh(db_user)
     return db_user
 
 
 async def reset_user_permissions(session: AsyncSession) -> int:
-    db_users = await list_users(session)
-    for db_user in db_users:
-        db_user.permissions = {}
-        session.add(db_user)
-
+    updated_count = int((await session.scalar(select(func.count()).select_from(User))) or 0)
+    if updated_count == 0:
+        return 0
+    await session.execute(update(User).values(permissions={}))
     await session.commit()
-    return len(db_users)
+    return updated_count
 
 
 # Role registry CRUD
@@ -298,7 +291,6 @@ async def create_or_append_role_permissions_no_overwrite(
 
     current_permissions.update(incoming_permissions)
     existing_role.permissions = current_permissions
-    session.add(existing_role)
     await session.commit()
     return RoleRegistryResult(
         status="updated",

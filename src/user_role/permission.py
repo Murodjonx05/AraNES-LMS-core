@@ -1,3 +1,4 @@
+from functools import lru_cache
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import TypeVar
@@ -108,6 +109,7 @@ def validate_permission_patch(permission_patch: dict[str, object]) -> dict[str, 
     return {key: value for key, value in permission_patch.items()}  # type: ignore[misc]
 
 
+@lru_cache(maxsize=None)
 def get_rbac_role_permission_defaults(role_name: str) -> dict[str, bool]:
     return dict(RBAC_ROLE_PERMISSION_DEFAULTS.get(role_name, {}))
 

@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 I18N_CAN_CREATE_SMALL = "i18n_can_create_small"
 I18N_CAN_PATCH_SMALL = "i18n_can_patch_small"
 I18N_CAN_CREATE_LARGE = "i18n_can_create_large"
@@ -44,5 +46,7 @@ I18N_ROLE_PERMISSION_DEFAULTS: dict[str, dict[str, bool]] = {
 }
 
 
+@lru_cache(maxsize=None)
 def get_i18n_role_permission_defaults(role_name: str) -> dict[str, bool]:
     return dict(I18N_ROLE_PERMISSION_DEFAULTS.get(role_name, {}))
+from functools import lru_cache
