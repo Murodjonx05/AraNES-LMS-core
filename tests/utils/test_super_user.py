@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from src.utils import super_user
+import src.utils.super_user as super_user
 
 
 class _AsyncContextManager:

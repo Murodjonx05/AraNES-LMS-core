@@ -1,26 +1,40 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from src.auth.crud import create_user, get_or_create_default_signup_role, get_user_by_username
+from src.auth.crud import (
+    create_user,
+    get_or_create_default_signup_role_with_config,
+    get_user_by_username,
+)
 from src.auth.exceptions import InvalidCredentialsError, UsernameAlreadyExistsError
-from src.auth.schemas import AuthTokenResponse, LogoutResponse, UserAuthDep
+from src.auth.schemas import (
+    AuthMeResponse,
+    AuthMessageResponse,
+    AuthTokenResponse,
+    UserAuthBody,
+)
+from src.auth.dependencies import (
+    get_request_access_token,
+    get_runtime_from_request,
+)
 from src.auth.service import (
-    extract_access_token,
     hash_password,
     issue_access_token,
     revoke_token,
-    set_access_cookie,
-    unset_access_cookie,
     verify_password,
 )
 from src.database import DbSession
-from src.settings import SECURITY
+from src.user_role.middlewares import get_current_user_with_role
 
-auth_router = APIRouter()
+auth_opened_router = APIRouter()
+auth_closed_router = APIRouter()
 
 
-@auth_router.post("/signup", response_model=AuthTokenResponse, status_code=status.HTTP_201_CREATED)
-async def signup(payload: UserAuthDep, response: Response, session: DbSession):
-    role = await get_or_create_default_signup_role(session)
+@auth_opened_router.post(
+    "/signup", response_model=AuthTokenResponse, status_code=status.HTTP_201_CREATED
+)
+async def signup(payload: UserAuthBody, session: DbSession, request: Request):
+    runtime = get_runtime_from_request(request)
+    role = await get_or_create_default_signup_role_with_config(session, config=runtime.config)
     try:
         user = await create_user(
             session,
@@ -32,35 +46,51 @@ async def signup(payload: UserAuthDep, response: Response, session: DbSession):
     except UsernameAlreadyExistsError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    token = issue_access_token(user.username)
-    set_access_cookie(response, token)
-    return AuthTokenResponse(access_token=token)
+    access_token = issue_access_token(user.username, security=runtime.security)
+    return AuthTokenResponse(access_token=access_token)
 
 
-@auth_router.post("/login", response_model=AuthTokenResponse)
-async def login(payload: UserAuthDep, response: Response, session: DbSession):
+@auth_opened_router.post("/login", response_model=AuthTokenResponse)
+async def login(payload: UserAuthBody, session: DbSession, request: Request):
     user = await get_user_by_username(session, payload.username)
     if user is None or not verify_password(payload.password, user.password):
         exc = InvalidCredentialsError("Invalid credentials")
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    token = issue_access_token(user.username)
-    set_access_cookie(response, token)
-    return AuthTokenResponse(access_token=token)
+    runtime = get_runtime_from_request(request)
+    access_token = issue_access_token(user.username, security=runtime.security)
+    return AuthTokenResponse(access_token=access_token)
 
 
-@auth_router.post(
-    "/logout",
-    response_model=LogoutResponse,
-    dependencies=[Depends(SECURITY.access_token_required)],
-)
-async def logout(request: Request, response: Response):
-    token = await extract_access_token(request)
-    revoke_token(token)
-    unset_access_cookie(response)
-    return LogoutResponse(message="Logged out successfully")
+@auth_closed_router.post("/reset", response_model=AuthMessageResponse)
+async def reset_access_token(request: Request, request_token=Depends(get_request_access_token)):
+    runtime = get_runtime_from_request(request)
+    await revoke_token(
+        request_token.token,
+        security=runtime.security,
+        engine=runtime.engine,
+    )
+    return AuthMessageResponse(message="Access token revoked. Login again.")
 
 
-@auth_router.get("/protected", dependencies=[Depends(SECURITY.access_token_required)])
-def protected():
-    return {"message": "Hello World"}
+@auth_closed_router.get("/me", response_model=AuthMeResponse)
+async def me(user_role_pair=Depends(get_current_user_with_role)):
+    user, role = user_role_pair
+    role_permissions = dict(role.permissions or {})
+    user_permissions = dict(user.permissions or {})
+    effective_permissions = dict(role_permissions)
+    effective_permissions.update(user_permissions)
+    return AuthMeResponse(
+        id=user.id,
+        username=user.username,
+        role={
+            "id": role.id,
+            "name": role.name,
+            "title_key": role.title_key,
+        },
+        permissions={
+            "user": user_permissions,
+            "role": role_permissions,
+            "effective": effective_permissions,
+        },
+    )

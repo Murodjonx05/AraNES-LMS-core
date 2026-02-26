@@ -1,98 +1,49 @@
-# Release Notes: Auth (Signup/Login/Logout + Cookie/Bearer)
+# Release Notes: Auth (Bearer JWT + Revocation)
 
-## Что добавлено
-
-В проект добавлены базовые auth endpoints:
+## Current Auth Endpoints
 
 - `POST /api/v1/auth/auth/signup`
 - `POST /api/v1/auth/auth/login`
-- `POST /api/v1/auth/auth/logout`
-- `GET /api/v1/auth/auth/protected` (проверка доступа)
+- `POST /api/v1/auth/auth/reset` (revoke current access token)
+- `GET /api/v1/auth/auth/me` (requires access token)
 
-## Что изменилось в авторизации
+## Current Auth Mode
 
-Сейчас backend работает в **hybrid режиме** (два режима сразу):
+Backend is configured for **Bearer JWT in headers only**.
 
-- `Bearer token` через заголовок `Authorization`
-- `access_token` через `Cookie`
+- `Authorization: Bearer <access_token>`
+- `AuthXConfig.JWT_TOKEN_LOCATION=["headers"]`
 
-Это включено в `AuthXConfig`:
+Cookie-based auth is **not enabled** in the current implementation.
 
-- `JWT_TOKEN_LOCATION=["headers", "cookies"]`
+## Token Revocation
 
-## Как это использовать
+`/reset` revokes the current access token by storing its `jti` (JWT ID) until token expiry.
 
-### Для сайтов (web)
+- revoked tokens are checked via AuthX blocklist callback
+- revocation data is stored in database table `auth_revoked_token_jtis`
+- expired revocation records are cleaned up during writes
 
-Рекомендуется использовать **cookie**:
+## JWT Compatibility Fix
 
-- браузер сам отправляет cookie
-- удобно для обычного frontend/backend
-- можно сделать `HttpOnly` для лучшей защиты
+Revocation parsing now accepts JWT `exp` in multiple formats:
 
-### Для мобильных приложений
+- `datetime`
+- ISO datetime string
+- numeric Unix timestamp (`int` / `float`)
 
-Рекомендуется использовать **Bearer token** в headers:
+This fixes revocation for tokens where `exp` is encoded/decoded as a numeric claim (for example `1772098145.865263`).
 
-- клиент сам контролирует токен
-- удобно для mobile API
-- не зависит от cookie-политик браузера
+## Usage Example
 
-## Поведение текущих endpoints
+```http
+GET /api/v1/auth/auth/me
+Authorization: Bearer <access_token>
+```
 
-### `signup`
+```http
+POST /api/v1/auth/auth/reset
+Authorization: Bearer <access_token>
+```
 
-- создаёт пользователя
-- хеширует пароль (PBKDF2 SHA-256)
-- возвращает `access_token` в JSON
-- одновременно ставит `access_token` в cookie
-
-### `login`
-
-- проверяет логин/пароль
-- возвращает `access_token` в JSON
-- одновременно ставит `access_token` в cookie
-
-### `logout`
-
-- требует действующий access token
-- добавляет текущий token в blocklist (revoked)
-- удаляет `access_token` cookie
-
-## Важный нюанс (текущая реализация)
-
-`logout` использует **in-memory blocklist**:
-
-- после перезапуска сервера revoked tokens забываются
-
-Для production лучше хранить blocklist в:
-
-- Redis
-- или базе данных
-
-## Текущие dev-настройки cookie
-
-Для локальной разработки сейчас включено:
-
-- `JWT_COOKIE_SECURE=False`
-- `JWT_COOKIE_CSRF_PROTECT=False`
-
-Это сделано для удобства локального HTTP.
-
-## Что нужно включить в production
-
-Для сайта (cookie auth) обязательно:
-
-- `JWT_COOKIE_SECURE=True`
-- `JWT_COOKIE_HTTP_ONLY=True`
-- `JWT_COOKIE_CSRF_PROTECT=True`
-- корректный `SameSite` (`lax` / `none` в зависимости от frontend домена)
-
-## Итог
-
-Текущая схема подходит для обоих клиентов:
-
-- `web -> cookie`
-- `mobile -> bearer token`
-
-Backend уже поддерживает оба варианта одновременно.
+After `/reset`, the same token should return `401` on protected endpoints.

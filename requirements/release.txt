@@ -1,1 +1,8 @@
-t
+fastapi[standard]
+sqlalchemy
+aiosqlite
+authx
+pydantic
+python-dotenv
+alembic
+PyYAML

@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.i18n.exceptions import I18nLargeNotFoundError, I18nSmallNotFoundError
 from src.i18n.models import TranslateDesc, TranslateTitle
+from src.i18n.translates import register_large_translate, register_small_translate
 
 TranslationPatch = dict[str, str]
 
@@ -51,6 +52,16 @@ async def upsert_small(
     await session.commit()
     await session.refresh(db_small_translation)
     return db_small_translation
+
+
+async def register_and_upsert_small(
+    session: AsyncSession,
+    *,
+    key: str,
+    translation_patch: TranslationPatch,
+) -> TranslateTitle:
+    register_small_translate(key, translation_patch)
+    return await upsert_small(session, key=key, translation_patch=translation_patch)
 
 
 async def list_large(session: AsyncSession) -> list[TranslateDesc]:
@@ -109,3 +120,19 @@ async def upsert_large(
     await session.commit()
     await session.refresh(db_large_translation)
     return db_large_translation
+
+
+async def register_and_upsert_large(
+    session: AsyncSession,
+    *,
+    key1: str,
+    key2: str,
+    translation_patch: TranslationPatch,
+) -> TranslateDesc:
+    register_large_translate(key1, key2, translation_patch)
+    return await upsert_large(
+        session,
+        key1=key1,
+        key2=key2,
+        translation_patch=translation_patch,
+    )

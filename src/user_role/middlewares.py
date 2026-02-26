@@ -3,14 +3,14 @@ from typing import Any
 from fastapi import Depends, HTTPException
 from sqlalchemy import select
 
+from src.auth.dependencies import get_cached_access_token_payload
 from src.database import DbSession
-from src.settings import SECURITY
 from src.user_role.models import Role, User
 
 
 async def get_current_user_with_role(
     session: DbSession,
-    payload: Any = Depends(SECURITY.access_token_required),
+    payload: Any = Depends(get_cached_access_token_payload),
 ) -> tuple[User, Role]:
     username = getattr(payload, "sub", None)
     if not username:

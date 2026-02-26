@@ -3,13 +3,13 @@ from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.database import Model
-from src.settings import APP
+from src.i18n.settings import REQUIRED_LANGUAGES
 
 TranslationData = dict[str, str]
 
 
 def build_empty_translation_data() -> TranslationData:
-    return {lang: "" for lang in APP.REQUIRED_LANGUAGES}
+    return {lang: "" for lang in REQUIRED_LANGUAGES}
 
 
 class TranslateTitle(Model):

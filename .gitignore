@@ -8,6 +8,7 @@ __pycache__
 # environments
 venv
 .venv
-
+.env
+.python-version
 # data(db,...) files
 data

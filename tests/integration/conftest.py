@@ -1,0 +1,219 @@
+from __future__ import annotations
+
+import os
+import shutil
+import asyncio
+import hashlib
+import uuid
+from pathlib import Path
+from typing import AsyncIterator
+
+import httpx
+import pytest
+import pytest_asyncio
+from alembic import command
+from alembic.config import Config
+
+TEST_JWT_SECRET = "test-secret-key-with-32-byte-minimum!!"
+TEST_CORS_ORIGIN = "http://testserver"
+
+
+def _integration_template_cache_key(repo_root: Path) -> str:
+    hasher = hashlib.sha256()
+    watched_paths = [
+        repo_root / "alembic.ini",
+        repo_root / "migrations" / "env.py",
+        repo_root / "src" / "startup" / "bootstrap.py",
+        repo_root / "src" / "user_role" / "bootstrap.py",
+        repo_root / "src" / "i18n" / "bootstrap.py",
+        repo_root / "src" / "i18n" / "translates.py",
+        repo_root / "src" / "user_role" / "translates.py",
+        repo_root / "src" / "user_role" / "defaults.py",
+        Path(__file__).resolve(),
+    ]
+    watched_paths.extend(sorted((repo_root / "migrations" / "versions").glob("*.py")))
+    for path in watched_paths:
+        if not path.exists():
+            continue
+        hasher.update(str(path.relative_to(repo_root)).encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update(path.read_bytes())
+        hasher.update(b"\0")
+    return hasher.hexdigest()[:16]
+
+
+def _integration_template_cache_dir(repo_root: Path) -> Path:
+    key = _integration_template_cache_key(repo_root)
+    return repo_root / ".pytest_cache" / "integration_db_templates" / key
+
+
+@pytest.fixture(scope="session")
+def migrated_db_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """
+    Build a migrated SQLite DB once per test session, then copy it per test for isolation.
+    This avoids running Alembic in every integration test fixture.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    cache_dir = _integration_template_cache_dir(repo_root)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    template_db_path = cache_dir / "template.sqlite3"
+
+    if template_db_path.exists():
+        return template_db_path
+
+    os.environ["JWT_SECRET_KEY"] = TEST_JWT_SECRET
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{template_db_path}"
+    os.environ["CORS_ALLOW_ORIGINS"] = TEST_CORS_ORIGIN
+    os.environ["CORS_ALLOW_CREDENTIALS"] = "false"
+
+    alembic_cfg = Config(str(repo_root / "alembic.ini"))
+    command.upgrade(alembic_cfg, "head")
+    return template_db_path
+
+
+@pytest.fixture(scope="session")
+def seeded_db_template(migrated_db_template: Path) -> Path:
+    """
+    Prepare a fully bootstrapped template DB once (migrations + app startup seeding/superuser).
+    Per-test fixtures will copy this DB and can skip lifespan startup for speed.
+    """
+    seeded_db_path = migrated_db_template.with_name("template-seeded.sqlite3")
+    if seeded_db_path.exists():
+        return seeded_db_path
+    shutil.copy2(migrated_db_template, seeded_db_path)
+
+    os.environ["JWT_SECRET_KEY"] = TEST_JWT_SECRET
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{seeded_db_path}"
+    os.environ["CORS_ALLOW_ORIGINS"] = TEST_CORS_ORIGIN
+    os.environ["CORS_ALLOW_CREDENTIALS"] = "false"
+    os.environ["BOOTSTRAP_SUPERUSER_CREATE"] = "true"
+    os.environ["BOOTSTRAP_SUPERUSER_USERNAME"] = "superuser"
+    os.environ["BOOTSTRAP_SUPERUSER_PASSWORD"] = "superuser11"
+
+    async def _seed_once() -> None:
+        from src.runtime import build_runtime, reset_default_runtime
+        from src.config import build_app_config
+        from src.startup.bootstrap import ensure_initial_super_user, run_bootstrap_seeding
+
+        reset_default_runtime()
+        runtime = build_runtime(build_app_config())
+        try:
+            await ensure_initial_super_user(runtime=runtime)
+            await run_bootstrap_seeding(runtime=runtime)
+        finally:
+            await runtime.engine.dispose()
+            reset_default_runtime()
+
+    asyncio.run(_seed_once())
+    return seeded_db_path
+
+
+@pytest_asyncio.fixture
+async def client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    seeded_db_template: Path,
+) -> AsyncIterator[httpx.AsyncClient]:
+    db_path = tmp_path / "integration.sqlite3"
+    shutil.copy2(seeded_db_template, db_path)
+
+    monkeypatch.setenv("JWT_SECRET_KEY", TEST_JWT_SECRET)
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
+    monkeypatch.setenv("CORS_ALLOW_ORIGINS", TEST_CORS_ORIGIN)
+    monkeypatch.setenv("CORS_ALLOW_CREDENTIALS", "false")
+    # DB template is already seeded and includes the superuser.
+    monkeypatch.setenv("BOOTSTRAP_SUPERUSER_CREATE", "false")
+    monkeypatch.setenv("BOOTSTRAP_SUPERUSER_USERNAME", "superuser")
+    monkeypatch.setenv("BOOTSTRAP_SUPERUSER_PASSWORD", "superuser11")
+
+    from src.runtime import build_runtime, reset_default_runtime
+    from src.config import build_app_config
+    from src.app import create_app
+
+    reset_default_runtime()
+    runtime = build_runtime(build_app_config())
+    app = create_app(runtime)
+
+    try:
+        # Skip lifespan startup for per-test clients: template DB is already fully bootstrapped.
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            yield c
+    finally:
+        await runtime.engine.dispose()
+        reset_default_runtime()
+
+
+@pytest_asyncio.fixture(scope="session")
+async def unauth_client(
+    tmp_path_factory: pytest.TempPathFactory,
+    seeded_db_template: Path,
+) -> AsyncIterator[httpx.AsyncClient]:
+    """
+    Shared client for unauthenticated/401 integration checks.
+    Uses a copied seeded DB once and skips lifespan; tests using this fixture must not mutate state.
+    """
+    db_dir = tmp_path_factory.mktemp("integration-unauth-client")
+    db_path = db_dir / "integration.sqlite3"
+    shutil.copy2(seeded_db_template, db_path)
+
+    os.environ["JWT_SECRET_KEY"] = TEST_JWT_SECRET
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
+    os.environ["CORS_ALLOW_ORIGINS"] = TEST_CORS_ORIGIN
+    os.environ["CORS_ALLOW_CREDENTIALS"] = "false"
+    os.environ["BOOTSTRAP_SUPERUSER_CREATE"] = "false"
+    os.environ["BOOTSTRAP_SUPERUSER_USERNAME"] = "superuser"
+    os.environ["BOOTSTRAP_SUPERUSER_PASSWORD"] = "superuser11"
+
+    from src.runtime import build_runtime, reset_default_runtime
+    from src.config import build_app_config
+    from src.app import create_app
+
+    reset_default_runtime()
+    runtime = build_runtime(build_app_config())
+    app = create_app(runtime)
+
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            yield c
+    finally:
+        await runtime.engine.dispose()
+        reset_default_runtime()
+
+
+@pytest_asyncio.fixture
+async def superuser_tokens(client: httpx.AsyncClient) -> dict[str, str]:
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "superuser", "password": "superuser11"},
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    return {"access": data["access_token"]}
+
+
+@pytest_asyncio.fixture
+async def regular_user_tokens(client: httpx.AsyncClient) -> dict[str, str]:
+    username = f"student{uuid.uuid4().hex[:10]}"
+    response = await client.post(
+        "/api/v1/auth/signup",
+        json={"username": username, "password": "StrongPass123"},
+    )
+    assert response.status_code == 201, response.text
+    data = response.json()
+    me_response = await client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {data['access_token']}"},
+    )
+    assert me_response.status_code == 200, me_response.text
+    me = me_response.json()
+    return {
+        "username": username,
+        "access": data["access_token"],
+        "user_id": me["id"],
+    }
+
+
+def bearer_headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}

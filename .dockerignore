@@ -1,12 +1,15 @@
-# trash files
-__pycache__
-*.log
-.ruff_cache
-.vscode
-
-# environments
 venv
 .venv
-
-# data(db,...) files
+__pycache__
+*.pyc
+*.pyo
+*.log
+.pytest_cache
+.ruff_cache
+.git
+.gitignore
+.env
 data
+tests
+docs
+firebase-debug.log
