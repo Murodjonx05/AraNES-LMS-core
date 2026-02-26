@@ -5,6 +5,7 @@ from threading import Lock
 
 from authx import AuthX
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 
 from src.config import AppConfig, build_app_config
 
@@ -17,9 +18,18 @@ class RuntimeContext:
     session_factory: async_sessionmaker[AsyncSession]
 
 
-def build_runtime(config: AppConfig) -> RuntimeContext:
+def build_runtime(config: AppConfig, in_memory: bool = False) -> RuntimeContext:
     security = AuthX(config=config.AUTH_CONFIG)
-    engine = create_async_engine(config.DATABASE_URL, echo=False)
+    
+    # Use StaticPool for faster tests - no connection pooling overhead
+    # For all SQLite databases in tests, use check_same_thread=False
+    engine_kwargs = {"echo": False}
+    if config.DATABASE_URL.startswith("sqlite"):
+        engine_kwargs["poolclass"] = StaticPool
+        # Always use check_same_thread=False for tests (works for both file and memory)
+        engine_kwargs["connect_args"] = {"check_same_thread": False}
+    
+    engine = create_async_engine(config.DATABASE_URL, **engine_kwargs)
     session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
     runtime = RuntimeContext(
         config=config,

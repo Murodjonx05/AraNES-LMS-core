@@ -19,6 +19,9 @@ TEST_JWT_SECRET = "test-secret-key-with-32-byte-minimum!!"
 TEST_CORS_ORIGIN = "http://testserver"
 TEST_PBKDF2_ITERATIONS = "100"
 
+# Cached config to avoid rebuilding for each test
+_cached_app_config = None
+
 
 def _integration_template_cache_key(repo_root: Path) -> str:
     hasher = hashlib.sha256()
@@ -155,8 +158,12 @@ async def client(
     monkeypatch: pytest.MonkeyPatch,
     seeded_db_template: Path,
 ) -> AsyncIterator[httpx.AsyncClient]:
+    import time
+    t0 = time.perf_counter()
+    
     db_path = tmp_path / "integration.sqlite3"
     shutil.copy2(seeded_db_template, db_path)
+    t1 = time.perf_counter()
 
     monkeypatch.setenv("JWT_SECRET_KEY", TEST_JWT_SECRET)
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
@@ -173,14 +180,30 @@ async def client(
     from src.app import create_app
     from src.utils.inprocess_http import close_inprocess_http
 
+    global _cached_app_config
+    if _cached_app_config is None:
+        _cached_app_config = build_app_config()
+    
+    # Update DATABASE_URL in cached config
+    _cached_app_config.DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
+    
     reset_default_runtime()
-    runtime = build_runtime(build_app_config())
+    runtime = build_runtime(_cached_app_config)
+    t2 = time.perf_counter()
+    
     app = create_app(runtime)
+    t3 = time.perf_counter()
 
     try:
         # Skip lifespan startup for per-test clients: template DB is already fully bootstrapped.
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            # Print timing info for first few tests
+            if hasattr(client, '_timing_logged'):
+                pass
+            else:
+                print(f"[TIMING] DB copy: {(t1-t0)*1000:.1f}ms, Runtime: {(t2-t1)*1000:.1f}ms, App: {(t3-t2)*1000:.1f}ms")
+                client._timing_logged = True
             yield c
     finally:
         await close_inprocess_http(app)
@@ -215,8 +238,15 @@ async def unauth_client(
     from src.app import create_app
     from src.utils.inprocess_http import close_inprocess_http
 
+    global _cached_app_config
+    if _cached_app_config is None:
+        _cached_app_config = build_app_config()
+    
+    # Update DATABASE_URL in cached config
+    _cached_app_config.DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
+    
     reset_default_runtime()
-    runtime = build_runtime(build_app_config())
+    runtime = build_runtime(_cached_app_config)
     app = create_app(runtime)
 
     try:
