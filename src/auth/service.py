@@ -5,6 +5,7 @@ import hmac
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from uuid import uuid4
 
 from authx import AuthX
@@ -12,19 +13,19 @@ from sqlalchemy import Column, DateTime, MetaData, String, Table, delete, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from src.runtime import get_default_runtime
+from src.utils.cache import RedisCacheService
 
 PBKDF2_ALGORITHM = "sha256"
 PBKDF2_SCHEME_NAME = "pbkdf2_sha256"
 PBKDF2_ITERATIONS = 100_000
 PBKDF2_ITERATIONS_ENV = "PBKDF2_ITERATIONS"
 FALLBACK_RAW_TOKEN_TTL = timedelta(days=30)
-_LEGACY_REVOKED_TOKEN_MAX_ENTRIES = 4096
-_legacy_revoked_tokens: dict[str, datetime] = {}
 _TOKEN_REVOCATION_CACHE_TTL_SECONDS_ENV = "TOKEN_REVOCATION_CACHE_TTL_SECONDS"
 _TOKEN_REVOCATION_CACHE_MAX_ENTRIES = 4096
 _TOKEN_IDENTITY_CACHE_MAX_ENTRIES = 2048
 _token_revocation_cache: dict[str, tuple[bool, datetime]] = {}
 _token_identity_cache: dict[str, tuple[str, datetime]] = {}
+_REVOCATION_CACHE_KEY_PREFIX = "auth:revoked"
 
 _revocation_metadata = MetaData()
 _revoked_token_jtis = Table(
@@ -39,6 +40,7 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+@lru_cache(maxsize=1)
 def _get_pbkdf2_iterations() -> int:
     raw_value = os.getenv(PBKDF2_ITERATIONS_ENV, "").strip()
     if not raw_value:
@@ -57,6 +59,7 @@ def _normalize_expiry(expires_at: datetime) -> datetime:
     return expires_at.astimezone(timezone.utc)
 
 
+@lru_cache(maxsize=1)
 def _get_token_revocation_cache_ttl_seconds() -> float:
     raw_value = os.getenv(_TOKEN_REVOCATION_CACHE_TTL_SECONDS_ENV, "").strip()
     if not raw_value:
@@ -82,36 +85,88 @@ def _cache_revocation_status(*, jti: str, revoked: bool, now: datetime, expires_
             _token_revocation_cache.pop(next(iter(_token_revocation_cache)))
 
 
-def _cache_legacy_revoked_token(*, token: str, now: datetime) -> None:
-    expires_at = now + FALLBACK_RAW_TOKEN_TTL
-    _legacy_revoked_tokens[token] = expires_at
-    for key, valid_until in list(_legacy_revoked_tokens.items()):
-        if valid_until <= now:
-            _legacy_revoked_tokens.pop(key, None)
-    while len(_legacy_revoked_tokens) > _LEGACY_REVOKED_TOKEN_MAX_ENTRIES:
-        _legacy_revoked_tokens.pop(next(iter(_legacy_revoked_tokens)))
+def _build_raw_token_revocation_key(token: str) -> str:
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return f"raw:{digest}"
 
 
-def _is_legacy_revoked_token_active(*, token: str, now: datetime) -> bool:
-    expires_at = _legacy_revoked_tokens.get(token)
-    if expires_at is None:
-        return False
-    if expires_at <= now:
-        _legacy_revoked_tokens.pop(token, None)
-        return False
-    return True
+def _build_revocation_cache_key(jti: str) -> str:
+    return f"{_REVOCATION_CACHE_KEY_PREFIX}:{jti}"
+
+
+def _token_cache_key(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _resolve_security_and_engine(
     *,
     security: AuthX | None = None,
     engine: AsyncEngine | None = None,
-) -> tuple[AuthX, AsyncEngine]:
+    cache_service: RedisCacheService | None = None,
+) -> tuple[AuthX, AsyncEngine, RedisCacheService | None]:
     if security is not None and engine is not None:
-        return security, engine
+        return security, engine, cache_service
 
     runtime = get_default_runtime()
-    return security or runtime.security, engine or runtime.engine
+    return (
+        security or runtime.security,
+        engine or runtime.engine,
+        cache_service or runtime.cache_service,
+    )
+
+
+async def _get_cached_revocation_status(
+    *,
+    cache_service: RedisCacheService | None,
+    jti: str,
+    now: datetime,
+) -> bool | None:
+    if cache_service is None:
+        return None
+    payload = await cache_service.get_json(_build_revocation_cache_key(jti))
+    if not isinstance(payload, dict):
+        return None
+    revoked = payload.get("revoked")
+    expires_at_raw = payload.get("expires_at")
+    if not isinstance(revoked, bool) or not isinstance(expires_at_raw, str):
+        return None
+    try:
+        expires_at = _normalize_expiry(datetime.fromisoformat(expires_at_raw))
+    except ValueError:
+        await cache_service.delete(_build_revocation_cache_key(jti))
+        return None
+    if expires_at <= now:
+        await cache_service.delete(_build_revocation_cache_key(jti))
+        return None
+    return revoked
+
+
+async def _set_cached_revocation_status(
+    *,
+    cache_service: RedisCacheService | None,
+    jti: str,
+    revoked: bool,
+    now: datetime,
+    expires_at: datetime,
+) -> None:
+    if cache_service is None:
+        return
+    normalized_expiry = _normalize_expiry(expires_at)
+    if revoked:
+        cache_until = normalized_expiry
+    else:
+        short_ttl = timedelta(seconds=_get_token_revocation_cache_ttl_seconds())
+        cache_until = min(normalized_expiry, now + short_ttl)
+
+    ttl_seconds = max(int((cache_until - now).total_seconds()), 1)
+    await cache_service.set_json(
+        _build_revocation_cache_key(jti),
+        {
+            "revoked": revoked,
+            "expires_at": normalized_expiry.isoformat(),
+        },
+        ttl_seconds=ttl_seconds,
+    )
 
 
 async def _store_revoked_jti(engine: AsyncEngine, jti: str, expires_at: datetime) -> None:
@@ -129,12 +184,13 @@ async def _store_revoked_jti(engine: AsyncEngine, jti: str, expires_at: datetime
 
 def _extract_jti_and_exp(token: str, *, security: AuthX) -> tuple[str, datetime]:
     now = _utc_now()
-    cached_identity = _token_identity_cache.get(token)
+    cache_key = _token_cache_key(token)
+    cached_identity = _token_identity_cache.get(cache_key)
     if cached_identity is not None:
         token_jti, token_exp = cached_identity
         if token_exp > now:
             return token_jti, token_exp
-        _token_identity_cache.pop(token, None)
+        _token_identity_cache.pop(cache_key, None)
 
     try:
         payload = security._decode_token(token)
@@ -153,12 +209,19 @@ def _extract_jti_and_exp(token: str, *, security: AuthX) -> tuple[str, datetime]
             raise ValueError("Invalid token expiry type.")
         normalized_exp = _normalize_expiry(token_exp)
         token_jti_str = str(token_jti)
-        _token_identity_cache[token] = (token_jti_str, normalized_exp)
+        _token_identity_cache[cache_key] = (token_jti_str, normalized_exp)
         if len(_token_identity_cache) > _TOKEN_IDENTITY_CACHE_MAX_ENTRIES:
             _token_identity_cache.pop(next(iter(_token_identity_cache)))
         return token_jti_str, normalized_exp
-    except Exception:
-        raise ValueError("Token is not a decodable JWT for jti-based revocation.") from None
+    except Exception as exc:
+        raise ValueError("Token is not a decodable JWT for jti-based revocation.") from exc
+
+
+def _resolve_revocation_identity(token: str, *, security: AuthX) -> tuple[str, datetime]:
+    try:
+        return _extract_jti_and_exp(token, security=security)
+    except ValueError:
+        return _build_raw_token_revocation_key(token), _utc_now() + FALLBACK_RAW_TOKEN_TTL
 
 
 async def is_token_revoked(
@@ -166,13 +229,14 @@ async def is_token_revoked(
     *,
     security: AuthX | None = None,
     engine: AsyncEngine | None = None,
+    cache_service: RedisCacheService | None = None,
 ) -> bool:
-    security, engine = _resolve_security_and_engine(security=security, engine=engine)
-    try:
-        token_jti, token_exp = _extract_jti_and_exp(token, security=security)
-    except ValueError:
-        # Backward-compatible path for tests/legacy raw token strings.
-        return _is_legacy_revoked_token_active(token=token, now=_utc_now())
+    security, engine, cache_service = _resolve_security_and_engine(
+        security=security,
+        engine=engine,
+        cache_service=cache_service,
+    )
+    token_jti, token_exp = _resolve_revocation_identity(token, security=security)
 
     now = _utc_now()
     cached = _token_revocation_cache.get(token_jti)
@@ -182,7 +246,21 @@ async def is_token_revoked(
             return cached_revoked
         _token_revocation_cache.pop(token_jti, None)
 
-    async with engine.begin() as conn:
+    redis_cached = await _get_cached_revocation_status(
+        cache_service=cache_service,
+        jti=token_jti,
+        now=now,
+    )
+    if redis_cached is not None:
+        _cache_revocation_status(
+            jti=token_jti,
+            revoked=redis_cached,
+            now=now,
+            expires_at=token_exp,
+        )
+        return redis_cached
+
+    async with engine.connect() as conn:
         row = (
             await conn.execute(
                 select(_revoked_token_jtis.c.expires_at).where(
@@ -190,33 +268,58 @@ async def is_token_revoked(
                 )
             )
         ).first()
-        if row is None:
-            _cache_revocation_status(
-                jti=token_jti,
-                revoked=False,
-                now=now,
-                expires_at=token_exp,
-            )
-            return False
-        expires_at = _normalize_expiry(row[0])
-        if expires_at <= now:
+
+    if row is None:
+        _cache_revocation_status(
+            jti=token_jti,
+            revoked=False,
+            now=now,
+            expires_at=token_exp,
+        )
+        await _set_cached_revocation_status(
+            cache_service=cache_service,
+            jti=token_jti,
+            revoked=False,
+            now=now,
+            expires_at=token_exp,
+        )
+        return False
+
+    expires_at = _normalize_expiry(row[0])
+    if expires_at <= now:
+        async with engine.begin() as conn:
             await conn.execute(
                 delete(_revoked_token_jtis).where(_revoked_token_jtis.c.jti == token_jti)
             )
-            _cache_revocation_status(
-                jti=token_jti,
-                revoked=False,
-                now=now,
-                expires_at=token_exp,
-            )
-            return False
         _cache_revocation_status(
             jti=token_jti,
-            revoked=True,
+            revoked=False,
             now=now,
-            expires_at=expires_at,
+            expires_at=token_exp,
         )
-        return True
+        await _set_cached_revocation_status(
+            cache_service=cache_service,
+            jti=token_jti,
+            revoked=False,
+            now=now,
+            expires_at=token_exp,
+        )
+        return False
+
+    _cache_revocation_status(
+        jti=token_jti,
+        revoked=True,
+        now=now,
+        expires_at=expires_at,
+    )
+    await _set_cached_revocation_status(
+        cache_service=cache_service,
+        jti=token_jti,
+        revoked=True,
+        now=now,
+        expires_at=expires_at,
+    )
+    return True
 
 
 async def revoke_token(
@@ -224,19 +327,28 @@ async def revoke_token(
     *,
     security: AuthX | None = None,
     engine: AsyncEngine | None = None,
+    cache_service: RedisCacheService | None = None,
 ) -> None:
-    security, engine = _resolve_security_and_engine(security=security, engine=engine)
-    try:
-        token_jti, expires_at = _extract_jti_and_exp(token, security=security)
-    except ValueError:
-        _cache_legacy_revoked_token(token=token, now=_utc_now())
-        return
+    security, engine, cache_service = _resolve_security_and_engine(
+        security=security,
+        engine=engine,
+        cache_service=cache_service,
+    )
+    token_jti, expires_at = _resolve_revocation_identity(token, security=security)
 
     await _store_revoked_jti(engine, token_jti, expires_at)
+    now = _utc_now()
     _cache_revocation_status(
         jti=token_jti,
         revoked=True,
-        now=_utc_now(),
+        now=now,
+        expires_at=expires_at,
+    )
+    await _set_cached_revocation_status(
+        cache_service=cache_service,
+        jti=token_jti,
+        revoked=True,
+        now=now,
         expires_at=expires_at,
     )
 
@@ -245,11 +357,21 @@ def configure_token_blocklist(
     *,
     security: AuthX | None = None,
     engine: AsyncEngine | None = None,
+    cache_service: RedisCacheService | None = None,
 ) -> None:
-    security, engine = _resolve_security_and_engine(security=security, engine=engine)
+    security, engine, cache_service = _resolve_security_and_engine(
+        security=security,
+        engine=engine,
+        cache_service=cache_service,
+    )
 
     async def _bound_blocklist(token: str) -> bool:
-        return await is_token_revoked(token, security=security, engine=engine)
+        return await is_token_revoked(
+            token,
+            security=security,
+            engine=engine,
+            cache_service=cache_service,
+        )
 
     security.set_token_blocklist(_bound_blocklist)
 

@@ -1,4 +1,6 @@
 import pytest
+from sqlalchemy.ext.asyncio import create_async_engine
+from unittest.mock import patch
 
 from src.auth import service
 
@@ -7,11 +9,35 @@ from src.auth import service
 def _reset_auth_service_caches():
     service._token_revocation_cache.clear()
     service._token_identity_cache.clear()
-    service._legacy_revoked_tokens.clear()
     yield
     service._token_revocation_cache.clear()
     service._token_identity_cache.clear()
-    service._legacy_revoked_tokens.clear()
+
+
+class _InvalidSecurity:
+    def _decode_token(self, token: str):
+        raise ValueError("invalid token")
+
+
+class _FakeCacheService:
+    def __init__(self):
+        self.values: dict[str, dict] = {}
+
+    async def get_json(self, key: str):
+        return self.values.get(key)
+
+    async def set_json(self, key: str, payload: dict, ttl_seconds: int | None = None):
+        self.values[key] = dict(payload)
+
+    async def delete(self, key: str):
+        self.values.pop(key, None)
+
+
+async def _create_revocation_engine():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(service._revocation_metadata.create_all)
+    return engine
 
 
 def test_hash_and_verify_password_roundtrip():
@@ -28,22 +54,65 @@ def test_verify_password_handles_malformed_hash():
 @pytest.mark.asyncio
 async def test_revoke_token_marks_token_as_revoked():
     token = "token-abc"
-    assert await service.is_token_revoked(token) is False
-    await service.revoke_token(token)
-    assert await service.is_token_revoked(token) is True
+    security = _InvalidSecurity()
+    cache_service = _FakeCacheService()
+    engine = await _create_revocation_engine()
+    try:
+        assert await service.is_token_revoked(
+            token,
+            security=security,
+            engine=engine,
+            cache_service=cache_service,  # type: ignore[arg-type]
+        ) is False
+        await service.revoke_token(
+            token,
+            security=security,
+            engine=engine,
+            cache_service=cache_service,  # type: ignore[arg-type]
+        )
+        assert await service.is_token_revoked(
+            token,
+            security=security,
+            engine=engine,
+            cache_service=cache_service,  # type: ignore[arg-type]
+        ) is True
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_legacy_revoked_token_expires(monkeypatch: pytest.MonkeyPatch):
+async def test_legacy_revoked_token_expires(
+    monkeypatch: pytest.MonkeyPatch,
+):
     issued_at = service.datetime(2026, 1, 1, tzinfo=service.timezone.utc)
     expiry_check_at = issued_at + service.FALLBACK_RAW_TOKEN_TTL + service.timedelta(seconds=1)
     current_now = {"value": issued_at}
     monkeypatch.setattr(service, "_utc_now", lambda: current_now["value"])
-
-    await service.revoke_token("legacy-token")
-    assert await service.is_token_revoked("legacy-token") is True
-    current_now["value"] = expiry_check_at
-    assert await service.is_token_revoked("legacy-token") is False
+    security = _InvalidSecurity()
+    cache_service = _FakeCacheService()
+    engine = await _create_revocation_engine()
+    try:
+        await service.revoke_token(
+            "legacy-token",
+            security=security,
+            engine=engine,
+            cache_service=cache_service,  # type: ignore[arg-type]
+        )
+        assert await service.is_token_revoked(
+            "legacy-token",
+            security=security,
+            engine=engine,
+            cache_service=cache_service,  # type: ignore[arg-type]
+        ) is True
+        current_now["value"] = expiry_check_at
+        assert await service.is_token_revoked(
+            "legacy-token",
+            security=security,
+            engine=engine,
+            cache_service=cache_service,  # type: ignore[arg-type]
+        ) is False
+    finally:
+        await engine.dispose()
 
 
 def test_extract_jti_and_exp_accepts_numeric_exp_timestamp():
@@ -91,17 +160,46 @@ def test_revocation_cache_remains_bounded_for_non_expired_entries(monkeypatch: p
     assert set(service._token_revocation_cache) == {"jti-4", "jti-5", "jti-6", "jti-7"}
 
 
-def test_legacy_revoked_token_cache_remains_bounded(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(service, "_LEGACY_REVOKED_TOKEN_MAX_ENTRIES", 4)
+@pytest.mark.asyncio
+async def test_shared_revocation_cache_helpers_roundtrip():
+    cache_service = _FakeCacheService()
+    jti = service._build_raw_token_revocation_key("token-redis")
     now = service._utc_now()
+    expires_at = now + service.FALLBACK_RAW_TOKEN_TTL
 
-    for idx in range(8):
-        service._cache_legacy_revoked_token(token=f"legacy-{idx}", now=now)
+    assert await service._get_cached_revocation_status(
+        cache_service=cache_service,  # type: ignore[arg-type]
+        jti=jti,
+        now=now,
+    ) is None
 
-    assert len(service._legacy_revoked_tokens) == 4
-    assert set(service._legacy_revoked_tokens) == {
-        "legacy-4",
-        "legacy-5",
-        "legacy-6",
-        "legacy-7",
-    }
+    await service._set_cached_revocation_status(
+        cache_service=cache_service,  # type: ignore[arg-type]
+        jti=jti,
+        revoked=True,
+        now=now,
+        expires_at=expires_at,
+    )
+
+    assert await service._get_cached_revocation_status(
+        cache_service=cache_service,  # type: ignore[arg-type]
+        jti=jti,
+        now=now,
+    ) is True
+    assert service._build_revocation_cache_key(jti) in cache_service.values
+
+
+def test_explicit_security_and_engine_do_not_require_default_runtime():
+    security = object()
+    engine = object()
+
+    with patch("src.auth.service.get_default_runtime") as get_default_runtime_mock:
+        resolved_security, resolved_engine, resolved_cache_service = service._resolve_security_and_engine(
+            security=security,  # type: ignore[arg-type]
+            engine=engine,  # type: ignore[arg-type]
+        )
+
+    assert resolved_security is security
+    assert resolved_engine is engine
+    assert resolved_cache_service is None
+    get_default_runtime_mock.assert_not_called()

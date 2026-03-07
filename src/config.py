@@ -169,13 +169,13 @@ def build_app_config() -> AppConfig:
     )
 
 
-def get_app_config():
+def get_app_config() -> AppConfig:
     from src.runtime import get_default_runtime
 
     return get_default_runtime().config
 
 
-def get_security():
+def get_security() -> AuthX:
     from src.runtime import get_default_runtime
 
     return get_default_runtime().security

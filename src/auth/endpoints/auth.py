@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from authx.schema import RequestToken
 
 from src.auth.crud import (
     create_user,
@@ -26,6 +27,9 @@ from src.database import DbSession
 from src.user_role.middlewares import get_current_user_with_role
 from src.utils.profiler import profile_function
 
+# Keep password verification work constant even when the username does not exist.
+_DUMMY_PASSWORD_HASH = hash_password("__sentinel__")
+
 auth_opened_router = APIRouter()
 auth_closed_router = APIRouter()
 
@@ -45,7 +49,7 @@ async def signup(payload: UserAuthBody, session: DbSession, request: Request):
             permissions={},
         )
     except UsernameAlreadyExistsError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     access_token = issue_access_token(user.username, security=runtime.security)
     return AuthTokenResponse(access_token=access_token)
@@ -55,9 +59,14 @@ async def signup(payload: UserAuthBody, session: DbSession, request: Request):
 @profile_function()
 async def login(payload: UserAuthBody, session: DbSession, request: Request):
     user = await get_user_for_login(session, payload.username)
-    if user is None or not verify_password(payload.password, user.password):
-        exc = InvalidCredentialsError("Invalid credentials")
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    if user is None or not verify_password(
+        payload.password,
+        user.password if user is not None else _DUMMY_PASSWORD_HASH,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(InvalidCredentialsError("Invalid credentials")),
+        )
 
     runtime = get_runtime_from_request(request)
     access_token = issue_access_token(user.username, security=runtime.security)
@@ -66,12 +75,16 @@ async def login(payload: UserAuthBody, session: DbSession, request: Request):
 
 @auth_closed_router.post("/reset", response_model=AuthMessageResponse)
 @profile_function()
-async def reset_access_token(request: Request, request_token=Depends(get_request_access_token)):
+async def reset_access_token(
+    request: Request,
+    request_token: RequestToken = Depends(get_request_access_token),
+):
     runtime = get_runtime_from_request(request)
     await revoke_token(
         request_token.token,
         security=runtime.security,
         engine=runtime.engine,
+        cache_service=runtime.cache_service,
     )
     return AuthMessageResponse(message="Access token revoked. Login again.")
 
@@ -82,8 +95,7 @@ async def me(user_role_pair=Depends(get_current_user_with_role)):
     user, role = user_role_pair
     role_permissions = dict(role.permissions or {})
     user_permissions = dict(user.permissions or {})
-    effective_permissions = dict(role_permissions)
-    effective_permissions.update(user_permissions)
+    effective_permissions = {**role_permissions, **user_permissions}
     return AuthMeResponse(
         id=user.id,
         username=user.username,

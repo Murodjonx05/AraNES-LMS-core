@@ -49,10 +49,9 @@ async def list_users(
     cached_users = await cache_service.get_user_list()
     if cached_users is not None:
         return cached_users
-    users = await crud_list_users(session)
-    payload = [serialize_user(user) for user in users]
-    await cache_service.set_user_list(payload)
-    return payload
+    serialized_users = [serialize_user(user) for user in await crud_list_users(session)]
+    await cache_service.set_user_list(serialized_users)
+    return serialized_users
 
 
 @users_router.get(
@@ -72,9 +71,9 @@ async def get_user(
         user = await crud_get_user_by_id(session, user_id)
     except UserNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    payload = serialize_user(user)
-    await cache_service.set_user(user_id, payload)
-    return payload
+    serialized_user = serialize_user(user)
+    await cache_service.set_user(user_id, serialized_user)
+    return serialized_user
 
 
 @users_router.post(
@@ -99,10 +98,10 @@ async def create_user(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RoleNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    serialized = serialize_user(user)
+    serialized_user = serialize_user(user)
     await cache_service.invalidate_user_list()
-    await cache_service.set_user(user.id, serialized)
-    return serialized
+    await cache_service.set_user(user.id, serialized_user)
+    return serialized_user
 
 
 @users_router.patch(
@@ -129,10 +128,10 @@ async def update_user(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except UsernameAlreadyExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    serialized = serialize_user(user)
+    serialized_user = serialize_user(user)
     await cache_service.invalidate_user_list()
-    await cache_service.set_user(user_id, serialized)
-    return serialized
+    await cache_service.set_user(user_id, serialized_user)
+    return serialized_user
 
 
 @users_router.put(
@@ -195,10 +194,10 @@ async def patch_user_permissions(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except InvalidPermissionPatchError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    serialized = serialize_user(updated_user)
+    serialized_user = serialize_user(updated_user)
     await cache_service.invalidate_user_list()
-    await cache_service.set_user(user_id, serialized)
-    return serialized
+    await cache_service.set_user(user_id, serialized_user)
+    return serialized_user
 
 
 @users_router.post(

@@ -75,9 +75,11 @@ class AppHttpRouteResolver:
         if not parts.scheme and not parts.netloc:
             return self._is_local_api_path(method, path), parts
 
-        hostname = (parts.hostname or "").lower()
-        is_allowed_internal_host = hostname in _INTERNAL_HOST_ALLOWLIST
-        return is_allowed_internal_host and self._is_local_api_path(method, path), parts
+        return (
+            (parts.hostname or "").lower() in _INTERNAL_HOST_ALLOWLIST
+            and self._is_local_api_path(method, path),
+            parts,
+        )
 
     async def request(
         self,

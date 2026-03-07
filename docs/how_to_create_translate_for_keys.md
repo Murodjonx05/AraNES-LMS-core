@@ -49,7 +49,7 @@ STUDENT_ROLE_TITLE_KEY = "role.student.title"
 For example (`src/user_role/translates.py`, real role-title registration):
 
 ```python
-from src.i18n.translates import register_title_translates
+from src.i18n.translates import register_small_translates
 from src.user_role.defaults import (
     ADMIN_ROLE_TITLE_KEY,
     STUDENT_ROLE_TITLE_KEY,
@@ -74,20 +74,22 @@ ROLE_TITLE_TRANSLATES = {
     },
 }
 
-register_title_translates(ROLE_TITLE_TRANSLATES)
+register_small_translates(ROLE_TITLE_TRANSLATES)
 ```
 
 Что важно:
 
 - ключи лучше брать из `CONST`
-- в конце файла нужно вызвать `register_title_translates(...)`
+- в конце файла нужно вызвать `register_small_translates(...)`
+- backward-compatible alias `register_title_translates(...)` всё ещё существует, но новый код лучше писать через `small`
 
 ## Step 2. Registry (Global i18n Storage Before DB Seed)
 
 Registry находится в `src/i18n/translates.py`:
 
-- `register_title_translates(mapping)` — регистрирует переводы
-- `get_registered_title_translates()` — возвращает все зарегистрированные переводы
+- `register_small_translates(mapping)` — регистрирует small/title переводы
+- `get_registered_small_translates()` — возвращает все зарегистрированные small/title переводы
+- `register_large_translates(mapping)` / `get_registered_large_translates()` — для large translations
 
 Это позволяет нескольким модулям добавлять свои переводы независимо:
 
@@ -103,7 +105,7 @@ Registry находится в `src/i18n/translates.py`:
 
 1. импортирует модули, которые регистрируют переводы
 2. берет переводы из registry
-3. создает записи в `translate_small`, если их еще нет
+3. создаёт отсутствующие записи в `translate_small` и `translate_large`
 
 Важно:
 
@@ -115,7 +117,7 @@ Registry находится в `src/i18n/translates.py`:
 For example (`src/course/translates.py`):
 
 ```python
-from src.i18n.translates import register_title_translates
+from src.i18n.translates_small import register_many
 
 COURSE_TITLE_TRANSLATES = {
     "course.title": {
@@ -125,10 +127,12 @@ COURSE_TITLE_TRANSLATES = {
     }
 }
 
-register_title_translates(COURSE_TITLE_TRANSLATES)
+register_many(COURSE_TITLE_TRANSLATES)
 ```
 
-После этого нужно подключить модуль-регистратор в `src/i18n/bootstrap.py`:
+После этого модуль-регистратор должен быть импортирован во время bootstrap. Сейчас `src/i18n/bootstrap.py`
+гарантированно подтягивает `src.user_role.translates`. Если ты добавляешь новый доменный модуль, его тоже нужно
+подключить в `_import_translate_registrars()`:
 
 ```python
 import src.course.translates  # noqa: F401
@@ -148,5 +152,7 @@ import src.course.translates  # noqa: F401
 
 - Ключи (`..._TITLE_KEY`) хранить как `CONST`
 - Тексты переводов хранить в `translates.py` доменного модуля
+- Для `small/title` переводов использовать `src.i18n.translates_small`
+- Для `large` переводов использовать `src.i18n.translates_large`
 - Регистрацию делать в конце `translates.py`
 - Сидирование держать в `src/i18n/bootstrap.py`

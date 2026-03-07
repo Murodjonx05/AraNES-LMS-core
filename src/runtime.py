@@ -21,12 +21,9 @@ class RuntimeContext:
 
 
 def _build_engine_kwargs(database_url: str, *, in_memory: bool) -> dict:
-    # Keep SQLite in-memory databases on a single shared connection.
-    # For file-based SQLite databases, preserve default pooling behavior.
     engine_kwargs = {"echo": False}
     if database_url.startswith("sqlite") and in_memory:
         engine_kwargs["poolclass"] = StaticPool
-        # Required for SQLite usage across async worker threads.
         engine_kwargs["connect_args"] = {"check_same_thread": False}
     return engine_kwargs
 
@@ -57,10 +54,9 @@ def build_runtime(config: AppConfig, in_memory: bool = False) -> RuntimeContext:
         cache_service=cache_service,
     )
 
-    # Register blocklist callback against this runtime's security/engine pair.
     from src.auth.service import configure_token_blocklist
 
-    configure_token_blocklist(security=security, engine=engine)
+    configure_token_blocklist(security=security, engine=engine, cache_service=cache_service)
     return runtime
 
 

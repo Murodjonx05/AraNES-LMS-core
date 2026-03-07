@@ -16,8 +16,7 @@ from src.user_role.exceptions import (
     SuperAdminRoleImmutableError,
     UserNotFoundError,
 )
-from src.user_role.models import Role
-from src.user_role.models import User
+from src.user_role.models import Role, User
 from src.user_role.permission import validate_permission_patch
 
 PermissionPatch = dict[str, bool]
@@ -45,30 +44,21 @@ def _merge_permission_patch(
 
 
 def _validated_permission_patch(permission_patch: dict[str, object]) -> PermissionPatch:
-    validated = validate_permission_patch(permission_patch)
-    return dict(validated)
+    return validate_permission_patch(permission_patch)
 
 
 async def _get_role_by_name(session: AsyncSession, role_name: str) -> Role | None:
     return await session.scalar(select(Role).where(Role.name == role_name))
 
 
-async def _get_role_id_by_name(session: AsyncSession, role_name: str) -> int | None:
-    return await session.scalar(select(Role.id).where(Role.name == role_name).limit(1))
-
-
-async def _get_user_id_by_username(session: AsyncSession, username: str) -> int | None:
-    return await session.scalar(select(User.id).where(User.username == username).limit(1))
-
-
 # Roles CRUD
 async def list_roles(session: AsyncSession) -> list[Role]:
-    query_result = await session.execute(
+    result = await session.execute(
         select(Role).options(
             load_only(Role.id, Role.name, Role.title_key, Role.permissions)
         )
     )
-    return list(query_result.scalars().all())
+    return list(result.scalars().all())
 
 
 async def get_role_by_id(session: AsyncSession, role_id: int) -> Role:
@@ -173,10 +163,10 @@ async def reset_role_permissions(session: AsyncSession) -> int:
 
 # Users CRUD
 async def list_users(session: AsyncSession) -> list[User]:
-    query_result = await session.execute(
+    result = await session.execute(
         select(User).options(load_only(User.id, User.username, User.role_id, User.permissions))
     )
-    return list(query_result.scalars().all())
+    return list(result.scalars().all())
 
 
 async def get_user_by_id(session: AsyncSession, user_id: int) -> User:

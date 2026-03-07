@@ -33,10 +33,9 @@ async def list_small(
     cached_items = await cache_service.get_small_list()
     if cached_items is not None:
         return cached_items
-    items = await crud_list_small(session)
-    payload = [serialize_small(item) for item in items]
-    await cache_service.set_small_list(payload)
-    return payload
+    serialized_items = [serialize_small(item) for item in await crud_list_small(session)]
+    await cache_service.set_small_list(serialized_items)
+    return serialized_items
 
 
 @small_route.get("/{key}")
@@ -53,9 +52,9 @@ async def get_small(
         item = await crud_get_small_by_key(session, key)
     except I18nSmallNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    payload = serialize_small(item)
-    await cache_service.set_small(key, payload)
-    return payload
+    serialized_item = serialize_small(item)
+    await cache_service.set_small(key, serialized_item)
+    return serialized_item
 
 
 @small_route.put("")
@@ -66,10 +65,7 @@ async def upsert_small(
     cache_service: I18nCacheService = Depends(get_request_i18n_cache_service),
 ):
     existing_item = await crud_get_small_optional(session, payload.key)
-    if existing_item is None:
-        permission_key = I18N_CAN_CREATE_SMALL
-    else:
-        permission_key = I18N_CAN_PATCH_SMALL
+    permission_key = I18N_CAN_CREATE_SMALL if existing_item is None else I18N_CAN_PATCH_SMALL
     if not actor.effective_permissions.get(permission_key, False):
         raise HTTPException(status_code=403, detail=f"Missing permission: {permission_key}")
     item = await crud_upsert_small(

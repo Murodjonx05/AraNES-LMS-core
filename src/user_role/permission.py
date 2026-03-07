@@ -113,7 +113,7 @@ def get_registered_permission_keys() -> frozenset[str]:
 
 
 def get_unknown_permission_keys(permission_patch: dict[str, object]) -> list[str]:
-    return sorted(key for key in permission_patch.keys() if key not in REGISTERED_PERMISSION_KEYS)
+    return sorted(key for key in permission_patch if key not in REGISTERED_PERMISSION_KEYS)
 
 
 def validate_permission_patch(permission_patch: dict[str, object]) -> dict[str, bool]:
@@ -185,10 +185,6 @@ class PermissionService:
     ) -> RBACModel:
         obj.permissions = obj.permissions or {}
         obj.permissions.update(permissions)
-
-        # если НЕ используешь MutableDict, делай так:
-        # obj.permissions = dict(obj.permissions)
-
         session.add(obj)
         await session.commit()
         await session.refresh(obj)

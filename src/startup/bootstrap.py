@@ -13,9 +13,7 @@ logger = logging.getLogger(__name__)
 
 def run_startup_alembic_upgrade(*, runtime: RuntimeContext | None = None) -> None:
     runtime = runtime or get_default_runtime()
-
-    alembic_ini = Path(runtime.config.BASE_DIR) / "alembic.ini"
-    command.upgrade(AlembicConfig(str(alembic_ini)), "head")
+    command.upgrade(AlembicConfig(str(Path(runtime.config.BASE_DIR) / "alembic.ini")), "head")
     logger.info("Applied Alembic migrations on startup.")
 
 
@@ -60,7 +58,8 @@ async def run_bootstrap_seeding(
     async with session_factory() as session:
         await seed_roles_if_missing(session)
         ensure_translate_registrars_loaded()
-        created_small = await seed_small_i18n_titles_if_missing(session, commit=False)
-        created_large = await seed_large_i18n_descriptions_if_missing(session, commit=False)
-        if created_small or created_large:
+        if (
+            await seed_small_i18n_titles_if_missing(session, commit=False)
+            or await seed_large_i18n_descriptions_if_missing(session, commit=False)
+        ):
             await session.commit()

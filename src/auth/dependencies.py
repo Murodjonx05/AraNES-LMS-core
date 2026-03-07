@@ -22,12 +22,9 @@ def get_security_from_request(request: Request):
 
 def _get_access_token_required_dependency(request: Request):
     app_state = getattr(request.app, "state", None)
-    cached_dependency = (
-        getattr(app_state, _ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY, None)
-        if app_state is not None
-        else None
-    )
-    if cached_dependency is not None:
+    if app_state is not None and (
+        cached_dependency := getattr(app_state, _ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY, None)
+    ) is not None:
         return cached_dependency
 
     security = get_security_from_request(request)
