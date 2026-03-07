@@ -124,6 +124,11 @@ export AUDIT_LOG_ENABLED="true"
 export RATE_LIMIT_ENABLED="true"
 export RATE_LIMIT_WINDOW_SECONDS="60"
 export RATE_LIMIT_MAX_REQUESTS="20"
+export REDIS_ENABLED="false"
+export REDIS_URL="redis://localhost:6379/0"
+export REDIS_DEFAULT_TTL_SECONDS="3600"
+export REDIS_HEARTBEAT_ENABLED="true"
+export REDIS_HEARTBEAT_SCHEDULE_SECONDS="60,600,1200,3600,14400,28800,43200"
 ```
 
 ### 4. Apply migrations
@@ -161,6 +166,7 @@ Schema migrations are not executed at runtime. Apply Alembic migrations before s
 - profiler behavior is env-switchable via `APP_PROFILING_ENABLED`
 - integration tests disable profiler logging by default to avoid distorting endpoint timings
 - auth-sensitive rate limiting is in-memory and intended as a local/single-process safeguard
+- Redis cache is optional; if unavailable, i18n reads fall back to the database automatically
 
 ## Tooling
 
@@ -236,6 +242,12 @@ Repeatable wrapper:
 - request logs are emitted through logger `aranes.request`
 - admin-sensitive mutating actions are emitted through logger `aranes.audit`
 - current rate limiting is in-memory, so it is not a distributed production limiter
+- Redis is used only for optional i18n single-item read-through caching in v1
+- cached endpoints in v1:
+  - `GET /api/v1/i18n/small/{key}`
+  - `GET /api/v1/i18n/large/{key1}/{key2}`
+- Redis miss or Redis outage falls back to DB reads
+- i18n writes invalidate corresponding Redis keys after successful DB commit
 
 ## Tests
 
@@ -271,6 +283,19 @@ Run Ruff:
 ## Docker
 
 `Dockerfile.core` installs runtime dependencies from `requirements/release.txt`.
+
+Local multi-service startup:
+
+```bash
+docker compose up --build
+```
+
+This starts:
+
+- `app`
+- `redis`
+
+The app keeps working from DB even if Redis is unavailable; Redis only accelerates i18n single-item reads when reachable.
 
 ## License
 

@@ -22,6 +22,7 @@ Cookie-based auth is **not enabled** in the current implementation.
 - mutating admin-sensitive actions are emitted through `aranes.audit`
 - `POST /api/v1/auth/login` and `POST /api/v1/auth/reset` are protected by an in-memory rate limiter
 - `GET /health` and `GET /ready` are available as open operational endpoints
+- optional Redis-backed read-through cache is available for single-item i18n reads
 
 ## Token Revocation
 

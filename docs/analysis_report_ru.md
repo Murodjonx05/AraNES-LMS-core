@@ -97,6 +97,7 @@
 - добавлен structured request logging через `aranes.request`;
 - добавлен audit logging для mutating admin-sensitive endpoint-ов через `aranes.audit`;
 - добавлен базовый in-memory rate limit для `POST /api/v1/auth/login` и `POST /api/v1/auth/reset`;
+- добавлен optional Redis read-through cache для single-item i18n reads с DB fallback;
 - добавлен repeatable wrapper `scripts/profile_tests.sh` для сравнимых perf-прогонов.
 
 Итог: команда получила более зрелый operational baseline, но за это пришлось заплатить частью perf headroom в локальном regression loop.
@@ -141,7 +142,7 @@
 |---|------|-------------|---------|---------|-------------|
 | R1 | Повторный documentation drift в будущем | Medium | Medium | **Medium** | Базовый drift уже исправлен, но его важно не вернуть следующими изменениями. |
 | R2 | Частично закрытая observability maturity gap | Low | Medium | **Low/Medium** | Health/readiness и базовый structured logging уже есть, но metrics/tracing ещё нет. |
-| R3 | SQLite остаётся ограничением для реальной конкурентной нагрузки | Medium | Medium | **Medium** | Для local/dev/test это нормально, для production-scale LMS — временное решение. |
+| R3 | SQLite остаётся ограничением для реальной конкурентной нагрузки | Medium | Medium | **Medium** | Для local/dev/test это нормально, даже при наличии Redis рядом это остаётся временным production persistence layer. |
 | R4 | Security-модель всё ещё не полностью “production-hardened” | Medium | Medium | **Medium** | Базовый rate limiting и audit logging уже есть, но нет distributed limiter, secret rotation и полноценного audit store. |
 | R5 | Perf discipline частично формализована | Low | Medium | **Low/Medium** | Есть profiler, baseline и repeatable wrapper, но log смешивает разные эпохи прогонов, а CI benchmark gate всё ещё нет. |
 
@@ -188,6 +189,7 @@
 - Bearer auth;
 - revocation;
 - запрет wildcard CORS;
+- optional cache не ломает fallback и не делает Redis hard dependency;
 - protected endpoint checks.
 
 Но до production-hardening ещё не хватает:
@@ -316,6 +318,7 @@
 2. Добавлен [pyproject.toml](/mnt/data/PYTHON/lms/pyproject.toml) с фиксацией Python version, pytest и ruff config.
 3. Perf-baseline закреплён в документации.
 4. Добавлены `health/ready`, request logging, audit logging и базовый auth rate limit.
+5. Добавлен optional Redis cache для i18n single-item reads с DB fallback.
 
 ### P1
 
@@ -323,6 +326,7 @@
 2. Добавить metrics/tracing.
 3. Подумать над persistent audit sink вместо только logger-based trail.
 4. Навести порядок в perf discipline: либо периодически сбрасывать `profile.log.json`, либо хранить benchmark snapshot отдельно.
+5. При желании расширить Redis usage на selected read paths сверх i18n, но только после повторного профилирования.
 
 ### P2
 

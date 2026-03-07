@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from src.database import DbSession
+from src.i18n.cache import I18nCacheService, get_request_i18n_cache_service
 from src.i18n.crud import (
     get_small_by_key as crud_get_small_by_key,
     get_small_optional as crud_get_small_optional,
@@ -27,12 +28,21 @@ async def list_small(session: DbSession):
 
 
 @small_route.get("/{key}")
-async def get_small(key: str, session: DbSession):
+async def get_small(
+    key: str,
+    session: DbSession,
+    cache_service: I18nCacheService = Depends(get_request_i18n_cache_service),
+):
+    cached_item = await cache_service.get_small(key)
+    if cached_item is not None:
+        return cached_item
     try:
         item = await crud_get_small_by_key(session, key)
     except I18nSmallNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return serialize_small(item)
+    payload = serialize_small(item)
+    await cache_service.set_small(key, payload)
+    return payload
 
 
 @small_route.put("")
@@ -40,6 +50,7 @@ async def upsert_small(
     payload: I18nSmallSchema,
     session: DbSession,
     actor: CurrentActor = Depends(get_current_actor),
+    cache_service: I18nCacheService = Depends(get_request_i18n_cache_service),
 ):
     existing_item = await crud_get_small_optional(session, payload.key)
     if existing_item is None:
@@ -53,4 +64,5 @@ async def upsert_small(
         key=payload.key,
         translation_patch=payload.data,
     )
+    await cache_service.invalidate_small(payload.key)
     return serialize_small(item)

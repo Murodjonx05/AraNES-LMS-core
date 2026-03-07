@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from src.database import DbSession
+from src.i18n.cache import I18nCacheService, get_request_i18n_cache_service
 from src.i18n.crud import (
     get_large as crud_get_large,
     get_large_optional as crud_get_large_optional,
@@ -27,12 +28,22 @@ async def list_large(session: DbSession):
 
 
 @large_route.get("/{key1}/{key2}")
-async def get_large(key1: str, key2: str, session: DbSession):
+async def get_large(
+    key1: str,
+    key2: str,
+    session: DbSession,
+    cache_service: I18nCacheService = Depends(get_request_i18n_cache_service),
+):
+    cached_item = await cache_service.get_large(key1, key2)
+    if cached_item is not None:
+        return cached_item
     try:
         item = await crud_get_large(session, key1=key1, key2=key2)
     except I18nLargeNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return serialize_large(item)
+    payload = serialize_large(item)
+    await cache_service.set_large(key1, key2, payload)
+    return payload
 
 
 @large_route.put("")
@@ -40,6 +51,7 @@ async def upsert_large(
     payload: I18nLargeSchema,
     session: DbSession,
     actor: CurrentActor = Depends(get_current_actor),
+    cache_service: I18nCacheService = Depends(get_request_i18n_cache_service),
 ):
     existing_item = await crud_get_large_optional(
         session,
@@ -58,4 +70,5 @@ async def upsert_large(
         key2=payload.key2,
         translation_patch=payload.data,
     )
+    await cache_service.invalidate_large(payload.key1, payload.key2)
     return serialize_large(item)

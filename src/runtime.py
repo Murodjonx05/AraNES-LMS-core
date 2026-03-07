@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from src.config import AppConfig, build_app_config
+from src.utils.cache import RedisCacheService
 
 
 @dataclass(slots=True)
@@ -16,6 +17,7 @@ class RuntimeContext:
     security: AuthX
     engine: AsyncEngine
     session_factory: async_sessionmaker[AsyncSession]
+    cache_service: RedisCacheService
 
 
 def _build_engine_kwargs(database_url: str, *, in_memory: bool) -> dict:
@@ -34,11 +36,25 @@ def build_runtime(config: AppConfig, in_memory: bool = False) -> RuntimeContext:
     engine_kwargs = _build_engine_kwargs(config.DATABASE_URL, in_memory=in_memory)
     engine = create_async_engine(config.DATABASE_URL, **engine_kwargs)
     session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+    cache_service = RedisCacheService(
+        enabled=bool(getattr(config, "REDIS_ENABLED", False)),
+        redis_url=str(getattr(config, "REDIS_URL", "redis://localhost:6379/0")),
+        default_ttl_seconds=int(getattr(config, "REDIS_DEFAULT_TTL_SECONDS", 3600)),
+        heartbeat_enabled=bool(getattr(config, "REDIS_HEARTBEAT_ENABLED", True)),
+        heartbeat_schedule_seconds=tuple(
+            getattr(
+                config,
+                "REDIS_HEARTBEAT_SCHEDULE_SECONDS",
+                (60, 600, 1200, 3600, 14400, 28800, 43200),
+            )
+        ),
+    )
     runtime = RuntimeContext(
         config=config,
         security=security,
         engine=engine,
         session_factory=session_factory,
+        cache_service=cache_service,
     )
 
     # Register blocklist callback against this runtime's security/engine pair.

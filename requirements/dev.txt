@@ -12,3 +12,4 @@ supervisor
 pytest-asyncio
 fastapi[standard]
 alembic
+redis

@@ -94,7 +94,27 @@ class AppConfig:
     RATE_LIMIT_ENABLED: bool
     RATE_LIMIT_WINDOW_SECONDS: int
     RATE_LIMIT_MAX_REQUESTS: int
+    REDIS_ENABLED: bool
+    REDIS_URL: str
+    REDIS_DEFAULT_TTL_SECONDS: int
+    REDIS_HEARTBEAT_ENABLED: bool
+    REDIS_HEARTBEAT_SCHEDULE_SECONDS: tuple[int, ...]
     AUTH_CONFIG: AuthXConfig
+
+
+def _get_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return int(raw.strip())
+
+
+def _get_int_tuple_env(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    values = tuple(int(item.strip()) for item in raw.split(",") if item.strip())
+    return values or default
 
 
 def build_app_config() -> AppConfig:
@@ -135,8 +155,16 @@ def build_app_config() -> AppConfig:
         REQUEST_LOG_ENABLED=_get_bool_env("REQUEST_LOG_ENABLED", True),
         AUDIT_LOG_ENABLED=_get_bool_env("AUDIT_LOG_ENABLED", True),
         RATE_LIMIT_ENABLED=_get_bool_env("RATE_LIMIT_ENABLED", True),
-        RATE_LIMIT_WINDOW_SECONDS=int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")),
-        RATE_LIMIT_MAX_REQUESTS=int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "20")),
+        RATE_LIMIT_WINDOW_SECONDS=_get_int_env("RATE_LIMIT_WINDOW_SECONDS", 60),
+        RATE_LIMIT_MAX_REQUESTS=_get_int_env("RATE_LIMIT_MAX_REQUESTS", 20),
+        REDIS_ENABLED=_get_bool_env("REDIS_ENABLED", False),
+        REDIS_URL=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+        REDIS_DEFAULT_TTL_SECONDS=_get_int_env("REDIS_DEFAULT_TTL_SECONDS", 3600),
+        REDIS_HEARTBEAT_ENABLED=_get_bool_env("REDIS_HEARTBEAT_ENABLED", True),
+        REDIS_HEARTBEAT_SCHEDULE_SECONDS=_get_int_tuple_env(
+            "REDIS_HEARTBEAT_SCHEDULE_SECONDS",
+            (60, 600, 1200, 3600, 14400, 28800, 43200),
+        ),
         AUTH_CONFIG=auth_config,
     )
 

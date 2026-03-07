@@ -4,6 +4,7 @@ __pycache__
 .ruff_cache
 .vscode
 .pytest_cache
+logs
 
 # environments
 venv

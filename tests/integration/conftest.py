@@ -21,6 +21,7 @@ TEST_CORS_ORIGIN = "http://testserver"
 TEST_PBKDF2_ITERATIONS = "1"
 TEST_PROFILING_ENABLED = "false"
 TEST_RATE_LIMIT_ENABLED = "false"
+TEST_REDIS_ENABLED = "false"
 
 # Cached config to avoid rebuilding for each test
 _cached_app_config = None
@@ -98,6 +99,7 @@ def migrated_db_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
     os.environ["APP_PROFILING_ENABLED"] = TEST_PROFILING_ENABLED
     os.environ["RATE_LIMIT_ENABLED"] = TEST_RATE_LIMIT_ENABLED
+    os.environ["REDIS_ENABLED"] = TEST_REDIS_ENABLED
 
     alembic_cfg = Config(str(repo_root / "alembic.ini"))
     try:
@@ -130,6 +132,7 @@ def seeded_db_template(migrated_db_template: Path) -> Path:
     os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
     os.environ["APP_PROFILING_ENABLED"] = TEST_PROFILING_ENABLED
     os.environ["RATE_LIMIT_ENABLED"] = TEST_RATE_LIMIT_ENABLED
+    os.environ["REDIS_ENABLED"] = TEST_REDIS_ENABLED
     os.environ["BOOTSTRAP_SUPERUSER_CREATE"] = "true"
     os.environ["BOOTSTRAP_SUPERUSER_USERNAME"] = "superuser"
     os.environ["BOOTSTRAP_SUPERUSER_PASSWORD"] = "superuser11"
@@ -179,6 +182,7 @@ async def integration_app(
     os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
     os.environ["APP_PROFILING_ENABLED"] = TEST_PROFILING_ENABLED
     os.environ["RATE_LIMIT_ENABLED"] = TEST_RATE_LIMIT_ENABLED
+    os.environ["REDIS_ENABLED"] = TEST_REDIS_ENABLED
     os.environ["BOOTSTRAP_SUPERUSER_CREATE"] = "false"
     os.environ["BOOTSTRAP_SUPERUSER_USERNAME"] = "superuser"
     os.environ["BOOTSTRAP_SUPERUSER_PASSWORD"] = "superuser11"
@@ -217,6 +221,7 @@ async def client(
     monkeypatch.setenv("PBKDF2_ITERATIONS", TEST_PBKDF2_ITERATIONS)
     monkeypatch.setenv("APP_PROFILING_ENABLED", TEST_PROFILING_ENABLED)
     monkeypatch.setenv("RATE_LIMIT_ENABLED", TEST_RATE_LIMIT_ENABLED)
+    monkeypatch.setenv("REDIS_ENABLED", TEST_REDIS_ENABLED)
     # DB template is already seeded and includes the superuser.
     monkeypatch.setenv("BOOTSTRAP_SUPERUSER_CREATE", "false")
     monkeypatch.setenv("BOOTSTRAP_SUPERUSER_USERNAME", "superuser")
@@ -246,6 +251,7 @@ async def client(
             yield c
     finally:
         integration_app.state.runtime = None
+        await runtime.cache_service.close()
         await runtime.engine.dispose()
         reset_default_runtime()
 
@@ -270,6 +276,7 @@ async def unauth_client(
     os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
     os.environ["APP_PROFILING_ENABLED"] = TEST_PROFILING_ENABLED
     os.environ["RATE_LIMIT_ENABLED"] = TEST_RATE_LIMIT_ENABLED
+    os.environ["REDIS_ENABLED"] = TEST_REDIS_ENABLED
     os.environ["BOOTSTRAP_SUPERUSER_CREATE"] = "false"
     os.environ["BOOTSTRAP_SUPERUSER_USERNAME"] = "superuser"
     os.environ["BOOTSTRAP_SUPERUSER_PASSWORD"] = "superuser11"
@@ -295,6 +302,7 @@ async def unauth_client(
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
             yield c
     finally:
+        await runtime.cache_service.close()
         await close_inprocess_http(app)
         await runtime.engine.dispose()
         reset_default_runtime()

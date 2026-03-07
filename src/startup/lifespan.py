@@ -14,6 +14,9 @@ from src.utils.inprocess_http import close_inprocess_http
 async def lifespan(app: FastAPI):
     runtime = getattr(app.state, "runtime", None)
     try:
+        if runtime is not None:
+            await runtime.cache_service.ping()
+            await runtime.cache_service.start_heartbeat()
         try:
             # Keep superuser bootstrap non-interactive inside app startup.
             await ensure_initial_super_user(runtime=runtime)
@@ -29,4 +32,6 @@ async def lifespan(app: FastAPI):
                 raise_missing_schema_help(retry_exc)
         yield
     finally:
+        if runtime is not None:
+            await runtime.cache_service.close()
         await close_inprocess_http(app)
