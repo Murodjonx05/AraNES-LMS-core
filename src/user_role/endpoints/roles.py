@@ -45,16 +45,12 @@ async def list_roles(
     session: DbSession,
     cache_service: RbacCacheService = Depends(get_request_rbac_cache_service),
 ):
-    """
-    Return a list of all roles as dictionaries.
-    """
     cached_roles = await cache_service.get_role_list()
     if cached_roles is not None:
         return cached_roles
-    roles = await crud_list_roles(session)
-    payload = [serialize_role(role) for role in roles]
-    await cache_service.set_role_list(payload)
-    return payload
+    serialized_roles = [serialize_role(role) for role in await crud_list_roles(session)]
+    await cache_service.set_role_list(serialized_roles)
+    return serialized_roles
 
 
 @roles_router.get(
@@ -74,9 +70,9 @@ async def get_role(
         role = await crud_get_role_by_id(session, role_id)
     except RoleNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    payload = serialize_role(role)
-    await cache_service.set_role(role_id, payload)
-    return payload
+    serialized_role = serialize_role(role)
+    await cache_service.set_role(role_id, serialized_role)
+    return serialized_role
 
 
 @roles_router.post(
@@ -94,10 +90,10 @@ async def create_role(
         role = await crud_create_role(session, name=payload.name, title_key=payload.title_key)
     except RoleAlreadyExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    serialized = serialize_role(role)
+    serialized_role = serialize_role(role)
     await cache_service.invalidate_role_list()
-    await cache_service.set_role(role.id, serialized)
-    return serialized
+    await cache_service.set_role(role.id, serialized_role)
+    return serialized_role
 
 
 @roles_router.patch(
@@ -124,10 +120,10 @@ async def update_role(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except RoleAlreadyExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    serialized = serialize_role(role)
+    serialized_role = serialize_role(role)
     await cache_service.invalidate_role_list()
-    await cache_service.set_role(role_id, serialized)
-    return serialized
+    await cache_service.set_role(role_id, serialized_role)
+    return serialized_role
 
 
 @roles_router.delete(
@@ -166,9 +162,6 @@ async def patch_role_permissions(
     session: DbSession,
     cache_service: RbacCacheService = Depends(get_request_rbac_cache_service),
 ):
-    """
-    Update the permissions of a role, unless it's the SuperAdmin role.
-    """
     try:
         updated_role = await crud_patch_role_permissions(
             session,
@@ -181,10 +174,10 @@ async def patch_role_permissions(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except InvalidPermissionPatchError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    serialized = serialize_role(updated_role)
+    serialized_role = serialize_role(updated_role)
     await cache_service.invalidate_role_list()
-    await cache_service.set_role(role_id, serialized)
-    return serialized
+    await cache_service.set_role(role_id, serialized_role)
+    return serialized_role
 
 
 @roles_router.post(

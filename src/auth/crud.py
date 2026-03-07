@@ -57,10 +57,10 @@ async def get_or_create_default_signup_role_with_config(
     config: AppConfig | None = None,
 ) -> Role:
     app_config = config or get_default_runtime().config
-    query_result = await session.execute(
+    result = await session.execute(
         select(Role).where(Role.name == app_config.DEFAULT_SIGNUP_ROLE_NAME)
     )
-    db_role = query_result.scalar_one_or_none()
+    db_role = result.scalar_one_or_none()
     if db_role is not None:
         return db_role
 

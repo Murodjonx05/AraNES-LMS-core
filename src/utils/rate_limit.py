@@ -70,4 +70,4 @@ class RedisRateLimiter:
         except Exception:
             self.cache_service.mark_unavailable()
             return None
-        return int(count) <= limit
+        return count <= limit

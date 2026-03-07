@@ -19,7 +19,6 @@ async def lifespan(app: FastAPI):
             await runtime.cache_service.start_heartbeat()
         try:
             await run_bootstrap_seeding(runtime=runtime)
-            # Keep superuser bootstrap non-interactive inside app startup.
             await ensure_initial_super_user(runtime=runtime)
         except OperationalError as exc:
             if not is_missing_schema_error(exc):

@@ -187,19 +187,19 @@ uvicorn src.app:app --host 0.0.0.0 --port 8000 --reload
 
 On application startup, the service:
 
-1. runs optional env-driven superuser bootstrap
-2. seeds default roles
-3. seeds default i18n translations
-
-Schema migrations are not executed at runtime. Apply Alembic migrations before starting the app.
+1. builds runtime context and cache services
+2. checks Redis availability when enabled
+3. seeds default roles and i18n translations
+4. bootstraps the initial superuser when env bootstrap is enabled
+5. if schema is missing, applies Alembic migrations and retries bootstrap once
 
 ## Current Constraints
 
 - Python `3.11+` is required
 - SQLite is the default local and development database
 - profiler behavior is env-switchable via `APP_PROFILING_ENABLED`
-- integration tests disable profiler logging by default to avoid distorting endpoint timings
-- auth-sensitive rate limiting is in-memory and intended as a local/single-process safeguard
+- integration tests can be profiled, but profiler overhead still affects timing numbers
+- rate limiting is Redis-backed when Redis is enabled, with in-memory fallback for local/dev mode
 - Redis cache is optional; if unavailable, i18n reads fall back to the database automatically
 
 ## Tooling
@@ -247,21 +247,18 @@ Required translation languages:
 
 ## Performance Baseline
 
-Current local baseline after the latest test-fixture and endpoint cleanup:
+Performance numbers in this repository are intentionally treated as local snapshots, not fixed guarantees.
+
+Use these commands to get a fresh baseline on the current machine:
 
 - full suite: `./venv/bin/pytest -v --profile --profile-top=20`
-- latest passing result: `71 passed in 1.27s`
-- dominant remaining slow test: `tests/integration/test_auth_protection.py::test_me_requires_access_token`
-- that remaining outlier is mostly `setup`, not endpoint `call` time
+- unit/integration split: `./venv/bin/pytest -q tests` and `./venv/bin/pytest -q tests/integration`
 
-Endpoint-level local observations from `logs/profile.log.json`:
+Current profiling guidance:
 
-- `POST /api/v1/auth/login` is the heaviest normal product path
-- `GET /api/v1/auth/me` is already in a healthy local range
-- RBAC read endpoints are already in a healthy local range
-- `GET /openapi.json` is a tooling/dev endpoint, not product traffic
-
-These numbers are meaningful only when compared under similar local conditions, fixture setup, and profiling configuration.
+- compare runs only under the same profiling flags and machine conditions
+- treat `setup` and `call` separately when reading slow integration tests
+- use `logs/profile.log.json` as a rolling request-level trace, not as a canonical benchmark artifact
 
 Repeatable wrapper:
 
@@ -303,13 +300,22 @@ async def cheap_helper():
 - `GET /ready` verifies database readiness
 - request logs are emitted through logger `aranes.request`
 - admin-sensitive mutating actions are emitted through logger `aranes.audit`
-- current rate limiting is in-memory, so it is not a distributed production limiter
-- Redis is used only for optional i18n single-item read-through caching in v1
-- cached endpoints in v1:
+- rate limiting uses Redis shared state when Redis is enabled, with in-memory fallback otherwise
+- Redis is used for optional application caches, including i18n read-through caching and auth revocation L2 cache
+- cached i18n endpoints:
+  - `GET /api/v1/i18n/small`
   - `GET /api/v1/i18n/small/{key}`
+  - `GET /api/v1/i18n/large`
   - `GET /api/v1/i18n/large/{key1}/{key2}`
+- cached RBAC endpoints:
+  - `GET /api/v1/rbac/roles`
+  - `GET /api/v1/rbac/roles/{role_id}`
+  - `GET /api/v1/rbac/users`
+  - `GET /api/v1/rbac/users/{user_id}`
 - Redis miss or Redis outage falls back to DB reads
-- i18n writes invalidate corresponding Redis keys after successful DB commit
+- auth token revocation source of truth is the database table `auth_revoked_token_jtis`
+- Redis revocation entries are only a shared cache layer above the database
+- i18n and RBAC writes invalidate only the corresponding Redis keys after successful DB commit
 
 ## Tests
 
@@ -337,10 +343,27 @@ Run Ruff:
 ./venv/bin/ruff check .
 ```
 
+## CI/CD
+
+GitHub Actions workflows live in [`.github/workflows/ci.yml`](/run/media/aestra/data/PYTHON/lms/.github/workflows/ci.yml) and [`.github/workflows/cd.yml`](/run/media/aestra/data/PYTHON/lms/.github/workflows/cd.yml).
+
+CI runs on push and pull request:
+
+- install `requirements/dev.txt`
+- run `ruff check .`
+- run `pytest -q`
+- build `Dockerfile.core`
+
+CD publishes the container image to `GHCR`:
+
+- trigger: push to `main`, version tags `v*`, or manual dispatch
+- image: `ghcr.io/<owner>/<repo>`
+- tags: branch/tag/SHA, plus `latest` on the default branch
+
 ## Related Docs
 
-- [docs/release.md](/mnt/data/PYTHON/lms/docs/release.md)
-- [docs/analysis_report_ru.md](/mnt/data/PYTHON/lms/docs/analysis_report_ru.md)
+- [docs/release.md](/run/media/aestra/data/PYTHON/lms/docs/release.md)
+- [docs/analysis_report_ru.md](/run/media/aestra/data/PYTHON/lms/docs/analysis_report_ru.md)
 
 ## Docker
 
@@ -361,4 +384,4 @@ The app keeps working from DB even if Redis is unavailable; Redis only accelerat
 
 ## License
 
-This project is licensed under `GPL-3.0-only`. See [LICENSE](/mnt/data/PYTHON/lms/LICENSE).
+This project is licensed under `GPL-3.0-only`. See [LICENSE](/run/media/aestra/data/PYTHON/lms/LICENSE).

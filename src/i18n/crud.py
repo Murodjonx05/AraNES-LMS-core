@@ -18,8 +18,8 @@ def _merge_translation_patch(
 
 
 async def list_small(session: AsyncSession) -> list[TranslateTitle]:
-    query_result = await session.execute(select(TranslateTitle))
-    return list(query_result.scalars().all())
+    result = await session.execute(select(TranslateTitle).order_by(TranslateTitle.key))
+    return list(result.scalars().all())
 
 
 async def get_small_optional(session: AsyncSession, key: str) -> TranslateTitle | None:
@@ -64,8 +64,10 @@ async def register_and_upsert_small(
 
 
 async def list_large(session: AsyncSession) -> list[TranslateDesc]:
-    query_result = await session.execute(select(TranslateDesc))
-    return list(query_result.scalars().all())
+    result = await session.execute(
+        select(TranslateDesc).order_by(TranslateDesc.key1, TranslateDesc.key2)
+    )
+    return list(result.scalars().all())
 
 
 async def get_large_optional(
@@ -74,13 +76,7 @@ async def get_large_optional(
     key1: str,
     key2: str,
 ) -> TranslateDesc | None:
-    query_result = await session.execute(
-        select(TranslateDesc).where(
-            TranslateDesc.key1 == key1,
-            TranslateDesc.key2 == key2,
-        )
-    )
-    return query_result.scalar_one_or_none()
+    return await session.get(TranslateDesc, {"key1": key1, "key2": key2})
 
 
 async def get_large(

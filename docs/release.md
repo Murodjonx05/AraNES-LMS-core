@@ -20,9 +20,10 @@ Cookie-based auth is **not enabled** in the current implementation.
 
 - request logs are emitted through `aranes.request`
 - mutating admin-sensitive actions are emitted through `aranes.audit`
-- `POST /api/v1/auth/login` and `POST /api/v1/auth/reset` are protected by an in-memory rate limiter
+- `POST /api/v1/auth/login` and `POST /api/v1/auth/reset` are protected by rate limiting
+- rate limiting uses Redis shared state when Redis is enabled, with in-memory fallback otherwise
 - `GET /health` and `GET /ready` are available as open operational endpoints
-- optional Redis-backed read-through cache is available for single-item i18n reads
+- optional Redis-backed read-through cache is available for i18n and RBAC read endpoints
 
 ## Token Revocation
 
@@ -30,6 +31,7 @@ Cookie-based auth is **not enabled** in the current implementation.
 
 - revoked tokens are checked via AuthX blocklist callback
 - revocation data is stored in database table `auth_revoked_token_jtis`
+- Redis is used only as a shared cache layer above the database
 - expired revocation records are cleaned up during writes
 
 ## JWT Compatibility Fix

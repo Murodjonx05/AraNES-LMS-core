@@ -126,7 +126,11 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
             async with active_runtime.engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
         except Exception as exc:
-            request_id = getattr(request.state, "request_id", None) or request.headers.get("x-request-id") or uuid4().hex
+            request_id = (
+                getattr(request.state, "request_id", None)
+                or request.headers.get("x-request-id")
+                or uuid4().hex
+            )
             _OPERABILITY_LOGGER.exception(
                 "database readiness check failed",
                 extra={"request_id": request_id},
@@ -151,17 +155,17 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
     @app.middleware("http")
     async def _observe_requests(request, call_next):
         active_runtime = _current_runtime()
-        app.state.redis_rate_limiter = RedisRateLimiter(active_runtime.cache_service)
+        method = request.method
+        path = request.url.path
         request_id = request.headers.get("x-request-id") or uuid4().hex
         request.state.request_id = request_id
         start = time.perf_counter()
         status_code = 500
-        actor_subject: str | None = None
         client_host = _client_host(request)
 
         is_rate_limited = False
-        if active_runtime.config.RATE_LIMIT_ENABLED and request.url.path in _RATE_LIMITED_PATHS:
-            rate_limit_key = f"{client_host}:{request.url.path}"
+        if active_runtime.config.RATE_LIMIT_ENABLED and path in _RATE_LIMITED_PATHS:
+            rate_limit_key = f"{client_host}:{path}"
             redis_allowed = await app.state.redis_rate_limiter.allow(
                 rate_limit_key,
                 limit=active_runtime.config.RATE_LIMIT_MAX_REQUESTS,
@@ -189,23 +193,34 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
                 status_code = response.status_code
             except Exception:
                 elapsed_ms = (time.perf_counter() - start) * 1000.0
+                actor_subject = _extract_actor_subject(request, active_runtime)
                 _safe_emit_request_profile(
-                    method=request.method,
-                    path=request.url.path,
+                    method=method,
+                    path=path,
                     status_code=status_code,
                     elapsed_ms=elapsed_ms,
                     request_id=request_id,
                 )
-                actor_subject = _extract_actor_subject(request, active_runtime)
                 if active_runtime.config.REQUEST_LOG_ENABLED:
                     _emit_structured_log(
                         _REQUEST_LOGGER,
                         "request",
                         request_id=request_id,
-                        method=request.method,
-                        path=request.url.path,
+                        method=method,
+                        path=path,
                         status_code=status_code,
                         elapsed_ms=round(elapsed_ms, 3),
+                        client_host=client_host,
+                        actor=actor_subject,
+                    )
+                if active_runtime.config.AUDIT_LOG_ENABLED and _should_audit_request(path, method):
+                    _emit_structured_log(
+                        _AUDIT_LOGGER,
+                        "audit",
+                        request_id=request_id,
+                        method=method,
+                        path=path,
+                        status_code=status_code,
                         client_host=client_host,
                         actor=actor_subject,
                     )
@@ -214,10 +229,10 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
             response.headers["X-Request-ID"] = request_id
 
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        actor_subject = actor_subject or _extract_actor_subject(request, active_runtime)
+        actor_subject = _extract_actor_subject(request, active_runtime)
         _safe_emit_request_profile(
-            method=request.method,
-            path=request.url.path,
+            method=method,
+            path=path,
             status_code=status_code,
             elapsed_ms=elapsed_ms,
             request_id=request_id,
@@ -227,20 +242,20 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
                 _REQUEST_LOGGER,
                 "request",
                 request_id=request_id,
-                method=request.method,
-                path=request.url.path,
+                method=method,
+                path=path,
                 status_code=status_code,
                 elapsed_ms=round(elapsed_ms, 3),
                 client_host=client_host,
                 actor=actor_subject,
             )
-        if active_runtime.config.AUDIT_LOG_ENABLED and _should_audit_request(request.url.path, request.method):
+        if active_runtime.config.AUDIT_LOG_ENABLED and _should_audit_request(path, method):
             _emit_structured_log(
                 _AUDIT_LOGGER,
                 "audit",
                 request_id=request_id,
-                method=request.method,
-                path=request.url.path,
+                method=method,
+                path=path,
                 status_code=status_code,
                 client_host=client_host,
                 actor=actor_subject,
@@ -265,8 +280,6 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
 
     @app.exception_handler(authx_exceptions.JWTDecodeError)
     async def _jwt_decode_error_handler(request, exc: authx_exceptions.JWTDecodeError):
-        # AuthX defaults JWTDecodeError to 422; for protected endpoints we treat malformed
-        # bearer tokens as authentication failures (401) for consistency with tests/clients.
         return JSONResponse(
             status_code=401,
             content={
@@ -313,8 +326,6 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
                 if (path, method.lower()) in protected_operations:
                     operation["security"] = [{"BearerAuth": []}]
                 else:
-                    # Explicitly mark public routes as open to avoid inheriting security
-                    # from any future global defaults.
                     operation["security"] = []
 
         app.openapi_schema = openapi_schema

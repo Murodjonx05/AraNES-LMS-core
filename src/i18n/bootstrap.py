@@ -21,7 +21,6 @@ def _import_translate_registrars() -> None:
 
 
 def ensure_translate_registrars_loaded() -> None:
-    """Load modules that register i18n translations into the global registry."""
     _import_translate_registrars()
 
 
@@ -30,11 +29,10 @@ async def seed_small_i18n_titles_if_missing(session: AsyncSession, *, commit: bo
 
     result = await session.execute(select(TranslateTitle.key))
     existing = set(result.scalars().all())
-    registered_titles = get_registered_small_translates()
 
     created = 0
     to_add = []
-    for translate_key, translate_data in registered_titles.items():
+    for translate_key, translate_data in get_registered_small_translates().items():
         if translate_key in existing:
             continue
 
@@ -58,11 +56,10 @@ async def seed_large_i18n_descriptions_if_missing(
 
     result = await session.execute(select(TranslateDesc.key1, TranslateDesc.key2))
     existing = set(result.all())
-    registered_descriptions = get_registered_large_translates()
 
     created = 0
     to_add = []
-    for (key1, key2), translate_data in registered_descriptions.items():
+    for (key1, key2), translate_data in get_registered_large_translates().items():
         if (key1, key2) in existing:
             continue
 

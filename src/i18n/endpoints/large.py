@@ -33,10 +33,9 @@ async def list_large(
     cached_items = await cache_service.get_large_list()
     if cached_items is not None:
         return cached_items
-    items = await crud_list_large(session)
-    payload = [serialize_large(item) for item in items]
-    await cache_service.set_large_list(payload)
-    return payload
+    serialized_items = [serialize_large(item) for item in await crud_list_large(session)]
+    await cache_service.set_large_list(serialized_items)
+    return serialized_items
 
 
 @large_route.get("/{key1}/{key2}")
@@ -54,9 +53,9 @@ async def get_large(
         item = await crud_get_large(session, key1=key1, key2=key2)
     except I18nLargeNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    payload = serialize_large(item)
-    await cache_service.set_large(key1, key2, payload)
-    return payload
+    serialized_item = serialize_large(item)
+    await cache_service.set_large(key1, key2, serialized_item)
+    return serialized_item
 
 
 @large_route.put("")
@@ -71,10 +70,7 @@ async def upsert_large(
         key1=payload.key1,
         key2=payload.key2,
     )
-    if existing_item is None:
-        permission_key = I18N_CAN_CREATE_LARGE
-    else:
-        permission_key = I18N_CAN_PATCH_LARGE
+    permission_key = I18N_CAN_CREATE_LARGE if existing_item is None else I18N_CAN_PATCH_LARGE
     if not actor.effective_permissions.get(permission_key, False):
         raise HTTPException(status_code=403, detail=f"Missing permission: {permission_key}")
     item = await crud_upsert_large(

@@ -160,4 +160,4 @@ For example:
 ## Related Docs
 
 - `docs/doc.md` (overview)
-- `docs/how_to_create_permission_and_load.md` (create + load/seed)
+- `docs/how_to_create_translate_for_keys.md` (i18n key registration and bootstrap)

@@ -10,6 +10,8 @@ logs
 venv
 .venv
 .env
+.env.*
+!.env.example
 .python-version
 # data(db,...) files
 data

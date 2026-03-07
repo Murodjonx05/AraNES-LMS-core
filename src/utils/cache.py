@@ -24,12 +24,12 @@ def resolve_heartbeat_delay(schedule: tuple[int, ...], failure_count: int) -> in
 
 
 def get_request_cache_service(request: Request):
-    runtime = getattr(request.app.state, "runtime", None)
-    if runtime is None:
-        from src.runtime import get_default_runtime
+    if (runtime := getattr(request.app.state, "runtime", None)) is not None:
+        return runtime.cache_service
 
-        runtime = get_default_runtime()
-    return runtime.cache_service
+    from src.runtime import get_default_runtime
+
+    return get_default_runtime().cache_service
 
 
 @dataclass(slots=True)
@@ -134,10 +134,12 @@ class RedisCacheService:
                 failure_count = 0
             else:
                 failure_count += 1
-                delay = resolve_heartbeat_delay(schedule, failure_count)
                 _CACHE_LOGGER.warning(
                     "redis_unavailable",
-                    extra={"redis_url": self.redis_url, "next_retry_seconds": delay},
+                    extra={
+                        "redis_url": self.redis_url,
+                        "next_retry_seconds": resolve_heartbeat_delay(schedule, failure_count),
+                    },
                 )
             await asyncio.sleep(resolve_heartbeat_delay(schedule, failure_count))
 

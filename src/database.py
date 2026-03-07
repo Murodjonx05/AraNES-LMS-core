@@ -30,10 +30,8 @@ def _resolve_session_factory(
         return session_factory
     if runtime is not None:
         return runtime.session_factory
-    if request is not None:
-        app_runtime = getattr(request.app.state, "runtime", None)
-        if app_runtime is not None:
-            return app_runtime.session_factory
+    if request is not None and (app_runtime := getattr(request.app.state, "runtime", None)) is not None:
+        return app_runtime.session_factory
     return get_default_runtime().session_factory
 
 
