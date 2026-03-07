@@ -1,11 +1,13 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from src.i18n.settings import LARGE_I18N_DATA_MAX_LENGTH, SMALL_I18N_DATA_MAX_LENGTH
-from src.settings import APP
+from src.i18n.settings import (
+    LARGE_I18N_DATA_MAX_LENGTH,
+    REQUIRED_LANGUAGES,
+    SMALL_I18N_DATA_MAX_LENGTH,
+)
 
 
 TranslationMap = dict[str, str]
-
 DEFAULT_SMALL_I18N_EXAMPLE = {
     "key": "role.student.title",
     "data": {
@@ -61,7 +63,7 @@ class I18nLargeSchema(BaseModel):
 
 
 def _validate_translation_map(value: TranslationMap, max_length: int) -> TranslationMap:
-    allowed_languages = set(APP.REQUIRED_LANGUAGES)
+    allowed_languages = set(REQUIRED_LANGUAGES)
     for lang, text in value.items():
         if lang not in allowed_languages:
             raise ValueError(f"Unsupported language: {lang}")

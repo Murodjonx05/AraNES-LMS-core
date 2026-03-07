@@ -1,5 +1,7 @@
 import uvicorn
-from src.settings import APP
+
+from src.config import build_app_config
 
 if __name__ == "__main__":
-    uvicorn.run("src.app:app", host=APP.HOST, port=APP.PORT, reload=True)
+    app_config = build_app_config()
+    uvicorn.run("src.app:app", host=app_config.HOST, port=app_config.PORT, reload=True)

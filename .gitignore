@@ -4,10 +4,12 @@ __pycache__
 .ruff_cache
 .vscode
 .pytest_cache
+logs
 
 # environments
 venv
 .venv
-
+.env
+.python-version
 # data(db,...) files
 data

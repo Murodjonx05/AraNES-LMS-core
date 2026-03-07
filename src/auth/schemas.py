@@ -1,6 +1,5 @@
 from pydantic import BaseModel, Field
-from fastapi import Depends
-from typing import Annotated
+
 
 class UserAuthSchema(BaseModel):
     username: str = Field(
@@ -8,20 +7,43 @@ class UserAuthSchema(BaseModel):
         min_length=5,
         max_length=128,
         pattern="^[a-zA-Z0-9]+$",
-        example="student01"
+        json_schema_extra={"example": "student01"},
     )
     password: str = Field(
         ...,
         min_length=8,
         max_length=128,
-        example="StrongPass123"
+        json_schema_extra={"example": "StrongPass123"},
     )
 
-UserAuthDep = Annotated[UserAuthSchema, Depends()]
+UserAuthBody = UserAuthSchema
 
 class AuthTokenResponse(BaseModel):
-    access_token: str = Field(..., example="eyJhbGciOi...")
-    token_type: str = Field(default="bearer", example="bearer")
+    access_token: str = Field(..., json_schema_extra={"example": "eyJhbGciOi..."})
+    token_type: str = Field(default="bearer", json_schema_extra={"example": "bearer"})
 
-class LogoutResponse(BaseModel):
-    message: str = Field(..., example="Logged out successfully")
+
+class AuthMessageResponse(BaseModel):
+    message: str = Field(
+        ...,
+        json_schema_extra={"example": "Access token revoked. Login again."},
+    )
+
+
+class AuthMeRoleResponse(BaseModel):
+    id: int
+    name: str
+    title_key: str
+
+
+class AuthMePermissionsResponse(BaseModel):
+    user: dict[str, bool]
+    role: dict[str, bool]
+    effective: dict[str, bool]
+
+
+class AuthMeResponse(BaseModel):
+    id: int
+    username: str
+    role: AuthMeRoleResponse
+    permissions: AuthMePermissionsResponse

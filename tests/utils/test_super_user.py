@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from src.utils import super_user
+import src.utils.super_user as super_user
 
 
 class _AsyncContextManager:
@@ -27,6 +27,9 @@ class _FakeSelect:
     def where(self, *args, **kwargs):
         return self
 
+    def limit(self, *args, **kwargs):
+        return self
+
 
 class _FakeResult:
     def __init__(self, value):
@@ -35,14 +38,21 @@ class _FakeResult:
     def scalar_one_or_none(self):
         return self._value
 
+    def scalar(self):
+        return self._value
+
 
 class _FakeSession:
     def __init__(self, existing_values=()):
         self._existing_values = iter(existing_values)
         self.execute = AsyncMock(side_effect=self._execute)
+        self.scalar = AsyncMock(side_effect=self._scalar)
 
     async def _execute(self, stmt):
         return _FakeResult(next(self._existing_values))
+
+    async def _scalar(self, stmt):
+        return next(self._existing_values)
 
 
 def _install_fake_user_model(monkeypatch):
@@ -122,3 +132,28 @@ async def test_create_super_user_prompt_declines(monkeypatch, fake_user_model):
     await super_user.create_super_user_prompt()
 
     super_user.session_scope.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_super_user_requires_superadmin_role(monkeypatch, fake_user_model):
+    _ = fake_user_model
+    monkeypatch.setattr(super_user, "select", lambda *args, **kwargs: _FakeSelect())
+
+    fake_auth_service_module = types.ModuleType("src.auth.service")
+    fake_auth_service_module.hash_password = lambda value: f"hashed:{value}"
+    monkeypatch.setitem(sys.modules, "src.auth.service", fake_auth_service_module)
+
+    fake_role_module = types.ModuleType("src.user_role.models")
+
+    class FakeRole:
+        id = _Field()
+
+    fake_role_module.User = fake_user_model
+    fake_role_module.Role = FakeRole
+    monkeypatch.setitem(sys.modules, "src.user_role.models", fake_role_module)
+
+    fake_session = _FakeSession([None])
+    monkeypatch.setattr(super_user, "session_scope", lambda *args, **kwargs: _AsyncContextManager(fake_session))
+
+    with pytest.raises(RuntimeError, match="SuperAdmin role does not exist"):
+        await super_user.create_super_user(username="admin", password="secret123")

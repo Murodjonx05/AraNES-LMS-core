@@ -4,9 +4,12 @@ httpx
 PyYAML
 pytest
 pydantic
+python-dotenv
 aiosqlite
 asyncio
 sqlalchemy
 supervisor
 pytest-asyncio
 fastapi[standard]
+alembic
+redis

@@ -1,1 +1,9 @@
-t
+fastapi[standard]>=0.111.0
+sqlalchemy>=2.0.30
+aiosqlite>=0.20.0
+authx>=0.2.7
+pydantic>=2.7.1
+python-dotenv>=1.0.1
+alembic>=1.13.1
+PyYAML>=6.0.1
+redis>=5.0.4

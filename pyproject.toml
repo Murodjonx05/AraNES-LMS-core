@@ -1,0 +1,17 @@
+[project]
+name = "aranes-lms-core"
+version = "0.1.0"
+description = "FastAPI backend core for LMS auth, RBAC, and i18n services."
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F"]
+ignore = ["E402", "E501", "F401"]
