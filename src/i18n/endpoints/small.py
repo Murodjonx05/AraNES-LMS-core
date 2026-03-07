@@ -12,8 +12,7 @@ from src.i18n.exceptions import I18nSmallNotFoundError
 from src.i18n.permission import I18N_CAN_CREATE_SMALL, I18N_CAN_PATCH_SMALL
 from src.i18n.schemas import I18nSmallSchema
 from src.i18n.settings import SMALL_I18N_DATA_MAX_LENGTH
-from src.user_role.middlewares import ensure_permission, get_current_user_with_role
-from src.user_role.models import Role, User
+from src.user_role.middlewares import CurrentActor, get_current_actor
 
 small_route = APIRouter(
     prefix="/small",
@@ -40,14 +39,15 @@ async def get_small(key: str, session: DbSession):
 async def upsert_small(
     payload: I18nSmallSchema,
     session: DbSession,
-    user_role_pair: tuple[User, Role] = Depends(get_current_user_with_role),
+    actor: CurrentActor = Depends(get_current_actor),
 ):
-    user, role = user_role_pair
     existing_item = await crud_get_small_optional(session, payload.key)
     if existing_item is None:
-        ensure_permission(user, role, I18N_CAN_CREATE_SMALL)
+        permission_key = I18N_CAN_CREATE_SMALL
     else:
-        ensure_permission(user, role, I18N_CAN_PATCH_SMALL)
+        permission_key = I18N_CAN_PATCH_SMALL
+    if not actor.effective_permissions.get(permission_key, False):
+        raise HTTPException(status_code=403, detail=f"Missing permission: {permission_key}")
     item = await crud_upsert_small(
         session,
         key=payload.key,

@@ -39,3 +39,12 @@ def test_extract_jti_and_exp_accepts_numeric_exp_timestamp():
     assert token_jti == "test-jti"
     assert expires_at.tzinfo is not None
     assert expires_at.year >= 2026
+
+
+def test_pbkdf2_hex_digest_is_deterministic_for_same_inputs():
+    digest_a = service._pbkdf2_hex_digest("secret", "salt", 100)
+    digest_b = service._pbkdf2_hex_digest("secret", "salt", 100)
+    digest_c = service._pbkdf2_hex_digest("secret", "salt2", 100)
+
+    assert digest_a == digest_b
+    assert digest_a != digest_c

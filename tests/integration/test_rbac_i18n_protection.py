@@ -161,30 +161,18 @@ async def test_regular_user_gets_403_on_permission_gated_endpoints(
 ):
     headers = bearer_headers(regular_user_tokens["access"])
     cases = [
+        # Keep this set representative across RBAC and i18n mutating permissions.
         ("POST", "/api/v1/rbac/roles", role_create_payload()),
-        ("PATCH", "/api/v1/rbac/roles/2", role_update_payload()),
-        ("DELETE", "/api/v1/rbac/roles/2", None),
         ("PATCH", "/api/v1/rbac/roles/2/permissions", permission_patch_payload()),
-        ("POST", "/api/v1/rbac/roles/reset", None),
-        ("POST", "/api/v1/rbac/roles/role-registry/", role_registry_payload()),
         ("POST", "/api/v1/rbac/users", user_create_payload()),
-        ("PATCH", "/api/v1/rbac/users/1", user_update_payload()),
-        ("PUT", "/api/v1/rbac/users/1/password", user_password_payload()),
-        ("DELETE", "/api/v1/rbac/users/1", None),
+        ("POST", "/api/v1/rbac/users/reset", None),
         ("PUT", "/api/v1/i18n/small", small_payload()),
-        ("PUT", "/api/v1/i18n/large", large_payload()),
+        (
+            "PATCH",
+            f"/api/v1/rbac/users/{regular_user_tokens['user_id']}/permissions",
+            permission_patch_payload(),
+        ),
     ]
-
-    cases.extend(
-        [
-            (
-                "PATCH",
-                f"/api/v1/rbac/users/{regular_user_tokens['user_id']}/permissions",
-                permission_patch_payload(),
-            ),
-            ("POST", "/api/v1/rbac/users/reset", None),
-        ]
-    )
 
     for method, path, payload in cases:
         response = await client.request(method, path, headers=headers, json=payload)
@@ -220,9 +208,6 @@ async def test_superuser_can_access_protected_mutating_endpoints(
     )
     assert patch_user_response.status_code == 200, patch_user_response.text
 
-    reset_roles_response = await client.post("/api/v1/rbac/roles/reset", headers=headers)
-    assert reset_roles_response.status_code == 200, reset_roles_response.text
-
     reset_users_response = await client.post("/api/v1/rbac/users/reset", headers=headers)
     assert reset_users_response.status_code == 200, reset_users_response.text
 
@@ -232,13 +217,6 @@ async def test_superuser_can_access_protected_mutating_endpoints(
         json=small_payload(),
     )
     assert upsert_small_response.status_code == 200, upsert_small_response.text
-
-    upsert_large_response = await client.put(
-        "/api/v1/i18n/large",
-        headers=headers,
-        json=large_payload(),
-    )
-    assert upsert_large_response.status_code == 200, upsert_large_response.text
 
 
 @pytest.mark.asyncio

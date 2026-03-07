@@ -2,10 +2,10 @@
 
 ## Current Auth Endpoints
 
-- `POST /api/v1/auth/auth/signup`
-- `POST /api/v1/auth/auth/login`
-- `POST /api/v1/auth/auth/reset` (revoke current access token)
-- `GET /api/v1/auth/auth/me` (requires access token)
+- `POST /api/v1/auth/signup`
+- `POST /api/v1/auth/login`
+- `POST /api/v1/auth/reset` (revoke current access token)
+- `GET /api/v1/auth/me` (requires access token)
 
 ## Current Auth Mode
 
@@ -15,6 +15,13 @@ Backend is configured for **Bearer JWT in headers only**.
 - `AuthXConfig.JWT_TOKEN_LOCATION=["headers"]`
 
 Cookie-based auth is **not enabled** in the current implementation.
+
+## Operational Controls Added
+
+- request logs are emitted through `aranes.request`
+- mutating admin-sensitive actions are emitted through `aranes.audit`
+- `POST /api/v1/auth/login` and `POST /api/v1/auth/reset` are protected by an in-memory rate limiter
+- `GET /health` and `GET /ready` are available as open operational endpoints
 
 ## Token Revocation
 
@@ -37,12 +44,12 @@ This fixes revocation for tokens where `exp` is encoded/decoded as a numeric cla
 ## Usage Example
 
 ```http
-GET /api/v1/auth/auth/me
+GET /api/v1/auth/me
 Authorization: Bearer <access_token>
 ```
 
 ```http
-POST /api/v1/auth/auth/reset
+POST /api/v1/auth/reset
 Authorization: Bearer <access_token>
 ```
 

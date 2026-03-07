@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from src.user_role import crud
 from src.user_role.exceptions import (
@@ -119,9 +120,22 @@ async def test_role_registry_does_not_create_missing_role():
 
 @pytest.mark.asyncio
 async def test_create_role_rejects_duplicate_name():
-    session = SimpleNamespace(scalar=AsyncMock(return_value=SimpleNamespace(id=2, name="Admin")))
+    session = SimpleNamespace(
+        add=Mock(),
+        commit=AsyncMock(
+            side_effect=IntegrityError(
+                statement="INSERT INTO roles ...",
+                params={},
+                orig=Exception("UNIQUE constraint failed: roles.name"),
+            )
+        ),
+        rollback=AsyncMock(),
+    )
     with pytest.raises(RoleAlreadyExistsError):
         await crud.create_role(session, name="Admin", title_key="role.admin.title")
+
+    session.add.assert_called_once()
+    session.rollback.assert_awaited_once()
 
 
 @pytest.mark.asyncio

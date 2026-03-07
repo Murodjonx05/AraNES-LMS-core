@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import os
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from authx import AuthX
@@ -30,7 +30,7 @@ _revoked_token_jtis = Table(
 
 
 def _utc_now() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 def _get_pbkdf2_iterations() -> int:
@@ -41,14 +41,14 @@ def _get_pbkdf2_iterations() -> int:
         value = int(raw_value)
     except ValueError:
         return PBKDF2_ITERATIONS
-    # Keep a sane lower bound for tests/local tuning without allowing nonsensical values.
-    return max(100, value)
+    # Allow aggressive tuning in test/dev environments.
+    return max(1, value)
 
 
 def _normalize_expiry(expires_at: datetime) -> datetime:
     if expires_at.tzinfo is None:
-        return expires_at.replace(tzinfo=UTC)
-    return expires_at.astimezone(UTC)
+        return expires_at.replace(tzinfo=timezone.utc)
+    return expires_at.astimezone(timezone.utc)
 
 
 def _resolve_security_and_engine(
@@ -89,7 +89,7 @@ def _extract_jti_and_exp(token: str, *, security: AuthX) -> tuple[str, datetime]
         if isinstance(token_exp, str):
             token_exp = datetime.fromisoformat(token_exp)
         elif isinstance(token_exp, (int, float)):
-            token_exp = datetime.fromtimestamp(token_exp, tz=UTC)
+            token_exp = datetime.fromtimestamp(token_exp, tz=timezone.utc)
         if not isinstance(token_exp, datetime):
             raise ValueError("Invalid token expiry type.")
         return str(token_jti), _normalize_expiry(token_exp)
@@ -159,15 +159,19 @@ def configure_token_blocklist(
     security.set_token_blocklist(_bound_blocklist)
 
 
-def hash_password(password: str) -> str:
-    iterations = _get_pbkdf2_iterations()
-    salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac(
+def _pbkdf2_hex_digest(password: str, salt: str, iterations: int) -> str:
+    return hashlib.pbkdf2_hmac(
         PBKDF2_ALGORITHM,
         password.encode("utf-8"),
         salt.encode("utf-8"),
         iterations,
     ).hex()
+
+
+def hash_password(password: str) -> str:
+    iterations = _get_pbkdf2_iterations()
+    salt = secrets.token_hex(16)
+    digest = _pbkdf2_hex_digest(password, salt, iterations)
     return f"{PBKDF2_SCHEME_NAME}${iterations}${salt}${digest}"
 
 
@@ -180,12 +184,7 @@ def verify_password(password: str, stored_hash: str) -> bool:
     except (ValueError, TypeError):
         return False
 
-    candidate_digest = hashlib.pbkdf2_hmac(
-        PBKDF2_ALGORITHM,
-        password.encode("utf-8"),
-        salt.encode("utf-8"),
-        iteration_count,
-    ).hex()
+    candidate_digest = _pbkdf2_hex_digest(password, salt, iteration_count)
     return hmac.compare_digest(candidate_digest, expected_digest)
 
 

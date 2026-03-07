@@ -33,7 +33,7 @@ from src.user_role.schemas import (
     UserResponseSchema,
 )
 
-users_router = APIRouter(prefix="/users", tags=["rbac:users"])
+users_router = APIRouter(prefix="/users", tags=["users:+rbac"])
 
 
 @users_router.get("")
@@ -122,10 +122,9 @@ async def set_user_password(
 async def delete_user(
     user_id: int,
     session: DbSession,
-    actor_pair=Depends(require_permission(RBAC_USERS_MANAGE)),
+    actor=Depends(require_permission(RBAC_USERS_MANAGE)),
 ) -> Response:
-    actor, _ = actor_pair
-    if actor.id == user_id:
+    if actor.user_id == user_id:
         raise HTTPException(status_code=403, detail=str(SelfDeleteForbiddenError("Self-delete is not allowed")))
     try:
         await crud_delete_user_admin(session, user_id=user_id)

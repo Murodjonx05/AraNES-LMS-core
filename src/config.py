@@ -89,6 +89,11 @@ class AppConfig:
     DEFAULT_SIGNUP_ROLE_TITLE_KEY: str
     JWT_SECRET_KEY: str
     BOOTSTRAP_SUPERUSER_PROMPT: bool
+    REQUEST_LOG_ENABLED: bool
+    AUDIT_LOG_ENABLED: bool
+    RATE_LIMIT_ENABLED: bool
+    RATE_LIMIT_WINDOW_SECONDS: int
+    RATE_LIMIT_MAX_REQUESTS: int
     AUTH_CONFIG: AuthXConfig
 
 
@@ -127,6 +132,11 @@ def build_app_config() -> AppConfig:
         DEFAULT_SIGNUP_ROLE_TITLE_KEY=DEFAULT_SIGNUP_ROLE_TITLE_KEY,
         JWT_SECRET_KEY=jwt_secret_key,
         BOOTSTRAP_SUPERUSER_PROMPT=_get_bool_env("BOOTSTRAP_SUPERUSER_PROMPT", True),
+        REQUEST_LOG_ENABLED=_get_bool_env("REQUEST_LOG_ENABLED", True),
+        AUDIT_LOG_ENABLED=_get_bool_env("AUDIT_LOG_ENABLED", True),
+        RATE_LIMIT_ENABLED=_get_bool_env("RATE_LIMIT_ENABLED", True),
+        RATE_LIMIT_WINDOW_SECONDS=int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")),
+        RATE_LIMIT_MAX_REQUESTS=int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "20")),
         AUTH_CONFIG=auth_config,
     )
 

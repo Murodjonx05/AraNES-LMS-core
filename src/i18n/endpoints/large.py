@@ -12,8 +12,7 @@ from src.i18n.exceptions import I18nLargeNotFoundError
 from src.i18n.permission import I18N_CAN_CREATE_LARGE, I18N_CAN_PATCH_LARGE
 from src.i18n.schemas import I18nLargeSchema
 from src.i18n.settings import LARGE_I18N_DATA_MAX_LENGTH
-from src.user_role.middlewares import ensure_permission, get_current_user_with_role
-from src.user_role.models import Role, User
+from src.user_role.middlewares import CurrentActor, get_current_actor
 
 large_route = APIRouter(
     prefix="/large",
@@ -40,18 +39,19 @@ async def get_large(key1: str, key2: str, session: DbSession):
 async def upsert_large(
     payload: I18nLargeSchema,
     session: DbSession,
-    user_role_pair: tuple[User, Role] = Depends(get_current_user_with_role),
+    actor: CurrentActor = Depends(get_current_actor),
 ):
-    user, role = user_role_pair
     existing_item = await crud_get_large_optional(
         session,
         key1=payload.key1,
         key2=payload.key2,
     )
     if existing_item is None:
-        ensure_permission(user, role, I18N_CAN_CREATE_LARGE)
+        permission_key = I18N_CAN_CREATE_LARGE
     else:
-        ensure_permission(user, role, I18N_CAN_PATCH_LARGE)
+        permission_key = I18N_CAN_PATCH_LARGE
+    if not actor.effective_permissions.get(permission_key, False):
+        raise HTTPException(status_code=403, detail=f"Missing permission: {permission_key}")
     item = await crud_upsert_large(
         session,
         key1=payload.key1,

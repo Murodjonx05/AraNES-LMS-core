@@ -2,8 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from src.auth.crud import (
     create_user,
+    get_user_for_login,
     get_or_create_default_signup_role_with_config,
-    get_user_by_username,
 )
 from src.auth.exceptions import InvalidCredentialsError, UsernameAlreadyExistsError
 from src.auth.schemas import (
@@ -24,6 +24,7 @@ from src.auth.service import (
 )
 from src.database import DbSession
 from src.user_role.middlewares import get_current_user_with_role
+from src.utils.profiler import profile_function
 
 auth_opened_router = APIRouter()
 auth_closed_router = APIRouter()
@@ -51,8 +52,9 @@ async def signup(payload: UserAuthBody, session: DbSession, request: Request):
 
 
 @auth_opened_router.post("/login", response_model=AuthTokenResponse)
+@profile_function()
 async def login(payload: UserAuthBody, session: DbSession, request: Request):
-    user = await get_user_by_username(session, payload.username)
+    user = await get_user_for_login(session, payload.username)
     if user is None or not verify_password(payload.password, user.password):
         exc = InvalidCredentialsError("Invalid credentials")
         raise HTTPException(status_code=401, detail=str(exc)) from exc
@@ -63,6 +65,7 @@ async def login(payload: UserAuthBody, session: DbSession, request: Request):
 
 
 @auth_closed_router.post("/reset", response_model=AuthMessageResponse)
+@profile_function()
 async def reset_access_token(request: Request, request_token=Depends(get_request_access_token)):
     runtime = get_runtime_from_request(request)
     await revoke_token(
@@ -74,6 +77,7 @@ async def reset_access_token(request: Request, request_token=Depends(get_request
 
 
 @auth_closed_router.get("/me", response_model=AuthMeResponse)
+@profile_function()
 async def me(user_role_pair=Depends(get_current_user_with_role)):
     user, role = user_role_pair
     role_permissions = dict(role.permissions or {})

@@ -18,17 +18,20 @@ class RuntimeContext:
     session_factory: async_sessionmaker[AsyncSession]
 
 
+def _build_engine_kwargs(database_url: str, *, in_memory: bool) -> dict:
+    # Keep SQLite in-memory databases on a single shared connection.
+    # For file-based SQLite databases, preserve default pooling behavior.
+    engine_kwargs = {"echo": False}
+    if database_url.startswith("sqlite") and in_memory:
+        engine_kwargs["poolclass"] = StaticPool
+        # Required for SQLite usage across async worker threads.
+        engine_kwargs["connect_args"] = {"check_same_thread": False}
+    return engine_kwargs
+
+
 def build_runtime(config: AppConfig, in_memory: bool = False) -> RuntimeContext:
     security = AuthX(config=config.AUTH_CONFIG)
-    
-    # Use StaticPool for faster tests - no connection pooling overhead
-    # For all SQLite databases in tests, use check_same_thread=False
-    engine_kwargs = {"echo": False}
-    if config.DATABASE_URL.startswith("sqlite"):
-        engine_kwargs["poolclass"] = StaticPool
-        # Always use check_same_thread=False for tests (works for both file and memory)
-        engine_kwargs["connect_args"] = {"check_same_thread": False}
-    
+    engine_kwargs = _build_engine_kwargs(config.DATABASE_URL, in_memory=in_memory)
     engine = create_async_engine(config.DATABASE_URL, **engine_kwargs)
     session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
     runtime = RuntimeContext(

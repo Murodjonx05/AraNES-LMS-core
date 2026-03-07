@@ -1,21 +1,185 @@
 import authx.exceptions as authx_exceptions
+import json
+import logging
+import time
+from uuid import uuid4
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.routing import APIRoute
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
+from sqlalchemy import text
 
 from src.api import all_routes
 from src.auth.dependencies import require_access_token_payload
 from src.runtime import RuntimeContext, get_default_runtime
 from src.startup import lifespan
 from src.utils.inprocess_http import attach_inprocess_http
+from src.utils.profiler import emit_request_profile, ensure_profile_log_file, is_profiling_enabled
+from src.utils.rate_limit import InMemoryRateLimiter
+
+_REQUEST_LOGGER = logging.getLogger("aranes.request")
+_AUDIT_LOGGER = logging.getLogger("aranes.audit")
+_RATE_LIMITED_PATHS = frozenset(
+    {
+        "/api/v1/auth/login",
+        "/api/v1/auth/reset",
+    }
+)
+_AUDITED_PREFIXES = ("/api/v1/rbac", "/api/v1/i18n")
+_AUDITED_EXACT_PATHS = frozenset({"/api/v1/auth/reset"})
+
+
+def _extract_actor_subject(request, runtime: RuntimeContext) -> str | None:
+    auth_header = request.headers.get("authorization", "").strip()
+    if not auth_header.lower().startswith("bearer "):
+        return None
+    token = auth_header[7:].strip()
+    if not token:
+        return None
+    try:
+        payload = runtime.security._decode_token(token)
+    except Exception:
+        return None
+    return getattr(payload, "sub", None)
+
+
+def _should_audit_request(path: str, method: str) -> bool:
+    if method.upper() in {"GET", "HEAD", "OPTIONS"}:
+        return False
+    return path in _AUDITED_EXACT_PATHS or path.startswith(_AUDITED_PREFIXES)
+
+
+def _client_host(request) -> str:
+    if request.client is None or not request.client.host:
+        return "unknown"
+    return str(request.client.host)
+
+
+def _emit_structured_log(logger: logging.Logger, event: str, **payload: object) -> None:
+    logger.info(json.dumps({"event": event, **payload}, ensure_ascii=True, sort_keys=True))
 
 
 def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
     runtime = runtime or get_default_runtime()
+    profiling_enabled = is_profiling_enabled()
+    if profiling_enabled:
+        ensure_profile_log_file()
     app = FastAPI(lifespan=lifespan)
     app.state.runtime = runtime
+    app.state.rate_limiter = InMemoryRateLimiter()
+
+    @app.get("/health", tags=["system"])
+    async def health():
+        return {"status": "ok", "service": "aranes-lms-core"}
+
+    @app.get("/ready", tags=["system"])
+    async def ready():
+        try:
+            async with runtime.engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+        except Exception as exc:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "not_ready",
+                    "database": "error",
+                    "detail": str(exc),
+                },
+            )
+        return {
+            "status": "ready",
+            "database": "ok",
+            "database_backend": runtime.engine.url.get_backend_name(),
+        }
+
+    @app.middleware("http")
+    async def _observe_requests(request, call_next):
+        request_id = request.headers.get("x-request-id") or uuid4().hex
+        start = time.perf_counter()
+        status_code = 500
+        actor_subject: str | None = None
+        client_host = _client_host(request)
+
+        if (
+            runtime.config.RATE_LIMIT_ENABLED
+            and request.url.path in _RATE_LIMITED_PATHS
+            and not app.state.rate_limiter.allow(
+                f"{client_host}:{request.url.path}",
+                limit=runtime.config.RATE_LIMIT_MAX_REQUESTS,
+                window_seconds=runtime.config.RATE_LIMIT_WINDOW_SECONDS,
+            )
+        ):
+            response = JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded"},
+            )
+            response.headers["X-Request-ID"] = request_id
+            status_code = response.status_code
+        else:
+            try:
+                response = await call_next(request)
+                status_code = response.status_code
+            except Exception:
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                if profiling_enabled:
+                    emit_request_profile(
+                        method=request.method,
+                        path=request.url.path,
+                        status_code=status_code,
+                        elapsed_ms=elapsed_ms,
+                    )
+                actor_subject = _extract_actor_subject(request, runtime)
+                if runtime.config.REQUEST_LOG_ENABLED:
+                    _emit_structured_log(
+                        _REQUEST_LOGGER,
+                        "request",
+                        request_id=request_id,
+                        method=request.method,
+                        path=request.url.path,
+                        status_code=status_code,
+                        elapsed_ms=round(elapsed_ms, 3),
+                        client_host=client_host,
+                        actor=actor_subject,
+                    )
+                raise
+
+            response.headers["X-Request-ID"] = request_id
+
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        actor_subject = actor_subject or _extract_actor_subject(request, runtime)
+        if profiling_enabled:
+            emit_request_profile(
+                method=request.method,
+                path=request.url.path,
+                status_code=status_code,
+                elapsed_ms=elapsed_ms,
+            )
+        if runtime.config.REQUEST_LOG_ENABLED:
+            _emit_structured_log(
+                _REQUEST_LOGGER,
+                "request",
+                request_id=request_id,
+                method=request.method,
+                path=request.url.path,
+                status_code=status_code,
+                elapsed_ms=round(elapsed_ms, 3),
+                client_host=client_host,
+                actor=actor_subject,
+            )
+        if runtime.config.AUDIT_LOG_ENABLED and _should_audit_request(request.url.path, request.method):
+            _emit_structured_log(
+                _AUDIT_LOGGER,
+                "audit",
+                request_id=request_id,
+                method=request.method,
+                path=request.url.path,
+                status_code=status_code,
+                client_host=client_host,
+                actor=actor_subject,
+            )
+        return response
 
     trusted_origins = runtime.config.CORS.get("ALLOW_ORIGINS") or []
     if "*" in trusted_origins:

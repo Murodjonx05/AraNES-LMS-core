@@ -1,4 +1,6 @@
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import load_only
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth.exceptions import UsernameAlreadyExistsError
@@ -10,9 +12,13 @@ from src.user_role.models import Role, User
 PermissionMap = dict[str, bool]
 
 
-async def get_user_by_username(session: AsyncSession, username: str) -> User | None:
-    query_result = await session.execute(select(User).where(User.username == username))
-    return query_result.scalar_one_or_none()
+async def get_user_for_login(session: AsyncSession, username: str) -> User | None:
+    return await session.scalar(
+        select(User)
+        .options(load_only(User.id, User.username, User.password))
+        .where(User.username == username)
+        .limit(1)
+    )
 
 
 async def create_user(
@@ -23,10 +29,6 @@ async def create_user(
     role_id: int,
     permissions: PermissionMap | None = None,
 ) -> User:
-    existing_user = await get_user_by_username(session, username)
-    if existing_user is not None:
-        raise UsernameAlreadyExistsError("Username already exists")
-
     db_user = User(
         username=username,
         password=password_hash,
@@ -34,7 +36,14 @@ async def create_user(
         permissions=dict(permissions or {}),
     )
     session.add(db_user)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        message = str(getattr(exc, "orig", exc)).lower()
+        if "unique constraint failed" in message and "users.username" in message:
+            raise UsernameAlreadyExistsError("Username already exists") from exc
+        raise
     return db_user
 
 

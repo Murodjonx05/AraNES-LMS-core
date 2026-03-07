@@ -14,10 +14,13 @@ import pytest
 import pytest_asyncio
 from alembic import command
 from alembic.config import Config
+from fastapi import FastAPI
 
 TEST_JWT_SECRET = "test-secret-key-with-32-byte-minimum!!"
 TEST_CORS_ORIGIN = "http://testserver"
-TEST_PBKDF2_ITERATIONS = "100"
+TEST_PBKDF2_ITERATIONS = "1"
+TEST_PROFILING_ENABLED = "false"
+TEST_RATE_LIMIT_ENABLED = "false"
 
 # Cached config to avoid rebuilding for each test
 _cached_app_config = None
@@ -93,6 +96,8 @@ def migrated_db_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     os.environ["CORS_ALLOW_ORIGINS"] = TEST_CORS_ORIGIN
     os.environ["CORS_ALLOW_CREDENTIALS"] = "false"
     os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
+    os.environ["APP_PROFILING_ENABLED"] = TEST_PROFILING_ENABLED
+    os.environ["RATE_LIMIT_ENABLED"] = TEST_RATE_LIMIT_ENABLED
 
     alembic_cfg = Config(str(repo_root / "alembic.ini"))
     try:
@@ -123,6 +128,8 @@ def seeded_db_template(migrated_db_template: Path) -> Path:
     os.environ["CORS_ALLOW_ORIGINS"] = TEST_CORS_ORIGIN
     os.environ["CORS_ALLOW_CREDENTIALS"] = "false"
     os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
+    os.environ["APP_PROFILING_ENABLED"] = TEST_PROFILING_ENABLED
+    os.environ["RATE_LIMIT_ENABLED"] = TEST_RATE_LIMIT_ENABLED
     os.environ["BOOTSTRAP_SUPERUSER_CREATE"] = "true"
     os.environ["BOOTSTRAP_SUPERUSER_USERNAME"] = "superuser"
     os.environ["BOOTSTRAP_SUPERUSER_PASSWORD"] = "superuser11"
@@ -152,24 +159,64 @@ def seeded_db_template(migrated_db_template: Path) -> Path:
     return seeded_db_path
 
 
+@pytest_asyncio.fixture(scope="session")
+async def integration_app(
+    tmp_path_factory: pytest.TempPathFactory,
+    seeded_db_template: Path,
+) -> AsyncIterator[FastAPI]:
+    """
+    Build FastAPI app once per session to avoid repeated router/middleware setup.
+    Per-test fixtures swap app.state.runtime to keep DB isolation.
+    """
+    db_dir = tmp_path_factory.mktemp("integration-app-template")
+    db_path = db_dir / "integration.sqlite3"
+    shutil.copy2(seeded_db_template, db_path)
+
+    os.environ["JWT_SECRET_KEY"] = TEST_JWT_SECRET
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
+    os.environ["CORS_ALLOW_ORIGINS"] = TEST_CORS_ORIGIN
+    os.environ["CORS_ALLOW_CREDENTIALS"] = "false"
+    os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
+    os.environ["APP_PROFILING_ENABLED"] = TEST_PROFILING_ENABLED
+    os.environ["RATE_LIMIT_ENABLED"] = TEST_RATE_LIMIT_ENABLED
+    os.environ["BOOTSTRAP_SUPERUSER_CREATE"] = "false"
+    os.environ["BOOTSTRAP_SUPERUSER_USERNAME"] = "superuser"
+    os.environ["BOOTSTRAP_SUPERUSER_PASSWORD"] = "superuser11"
+
+    from src.runtime import build_runtime, reset_default_runtime
+    from src.config import build_app_config
+    from src.app import create_app
+    from src.utils.inprocess_http import close_inprocess_http
+
+    reset_default_runtime()
+    runtime = build_runtime(build_app_config())
+    app = create_app(runtime)
+
+    try:
+        yield app
+    finally:
+        await close_inprocess_http(app)
+        await runtime.engine.dispose()
+        reset_default_runtime()
+
+
 @pytest_asyncio.fixture
 async def client(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     seeded_db_template: Path,
+    integration_app: FastAPI,
 ) -> AsyncIterator[httpx.AsyncClient]:
-    import time
-    t0 = time.perf_counter()
-    
     db_path = tmp_path / "integration.sqlite3"
     shutil.copy2(seeded_db_template, db_path)
-    t1 = time.perf_counter()
 
     monkeypatch.setenv("JWT_SECRET_KEY", TEST_JWT_SECRET)
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setenv("CORS_ALLOW_ORIGINS", TEST_CORS_ORIGIN)
     monkeypatch.setenv("CORS_ALLOW_CREDENTIALS", "false")
     monkeypatch.setenv("PBKDF2_ITERATIONS", TEST_PBKDF2_ITERATIONS)
+    monkeypatch.setenv("APP_PROFILING_ENABLED", TEST_PROFILING_ENABLED)
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", TEST_RATE_LIMIT_ENABLED)
     # DB template is already seeded and includes the superuser.
     monkeypatch.setenv("BOOTSTRAP_SUPERUSER_CREATE", "false")
     monkeypatch.setenv("BOOTSTRAP_SUPERUSER_USERNAME", "superuser")
@@ -177,36 +224,28 @@ async def client(
 
     from src.runtime import build_runtime, reset_default_runtime
     from src.config import build_app_config
-    from src.app import create_app
-    from src.utils.inprocess_http import close_inprocess_http
+    from src.auth import dependencies as auth_dependencies
 
     global _cached_app_config
     if _cached_app_config is None:
         _cached_app_config = build_app_config()
-    
+
     # Update DATABASE_URL in cached config
     _cached_app_config.DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
-    
+
     reset_default_runtime()
     runtime = build_runtime(_cached_app_config)
-    t2 = time.perf_counter()
-    
-    app = create_app(runtime)
-    t3 = time.perf_counter()
+    integration_app.state.runtime = runtime
+    if hasattr(integration_app.state, auth_dependencies._ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY):
+        delattr(integration_app.state, auth_dependencies._ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY)
 
     try:
         # Skip lifespan startup for per-test clients: template DB is already fully bootstrapped.
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx.ASGITransport(app=integration_app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
-            # Print timing info for first few tests
-            if hasattr(client, '_timing_logged'):
-                pass
-            else:
-                print(f"[TIMING] DB copy: {(t1-t0)*1000:.1f}ms, Runtime: {(t2-t1)*1000:.1f}ms, App: {(t3-t2)*1000:.1f}ms")
-                client._timing_logged = True
             yield c
     finally:
-        await close_inprocess_http(app)
+        integration_app.state.runtime = None
         await runtime.engine.dispose()
         reset_default_runtime()
 
@@ -229,6 +268,8 @@ async def unauth_client(
     os.environ["CORS_ALLOW_ORIGINS"] = TEST_CORS_ORIGIN
     os.environ["CORS_ALLOW_CREDENTIALS"] = "false"
     os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
+    os.environ["APP_PROFILING_ENABLED"] = TEST_PROFILING_ENABLED
+    os.environ["RATE_LIMIT_ENABLED"] = TEST_RATE_LIMIT_ENABLED
     os.environ["BOOTSTRAP_SUPERUSER_CREATE"] = "false"
     os.environ["BOOTSTRAP_SUPERUSER_USERNAME"] = "superuser"
     os.environ["BOOTSTRAP_SUPERUSER_PASSWORD"] = "superuser11"
@@ -260,14 +301,12 @@ async def unauth_client(
 
 
 @pytest_asyncio.fixture
-async def superuser_tokens(client: httpx.AsyncClient) -> dict[str, str]:
-    response = await client.post(
-        "/api/v1/auth/login",
-        json={"username": "superuser", "password": "superuser11"},
-    )
-    assert response.status_code == 200, response.text
-    data = response.json()
-    return {"access": data["access_token"]}
+async def superuser_tokens(integration_app: FastAPI) -> dict[str, str]:
+    from src.auth.service import issue_access_token
+
+    runtime = integration_app.state.runtime
+    assert runtime is not None
+    return {"access": issue_access_token("superuser", security=runtime.security)}
 
 
 @pytest_asyncio.fixture

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 
@@ -51,8 +52,12 @@ async def _get_role_by_name(session: AsyncSession, role_name: str) -> Role | Non
     return await session.scalar(select(Role).where(Role.name == role_name))
 
 
-async def _get_user_by_username(session: AsyncSession, username: str) -> User | None:
-    return await session.scalar(select(User).where(User.username == username))
+async def _get_role_id_by_name(session: AsyncSession, role_name: str) -> int | None:
+    return await session.scalar(select(Role.id).where(Role.name == role_name).limit(1))
+
+
+async def _get_user_id_by_username(session: AsyncSession, username: str) -> int | None:
+    return await session.scalar(select(User.id).where(User.username == username).limit(1))
 
 
 # Roles CRUD
@@ -78,14 +83,16 @@ async def create_role(
     name: str,
     title_key: str,
 ) -> Role:
-    existing_role = await _get_role_by_name(session, name)
-    if existing_role is not None:
-        raise RoleAlreadyExistsError("Role with this name already exists")
-
     db_role = Role(name=name, title_key=title_key, permissions={})
     session.add(db_role)
-    await session.flush()
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        message = str(getattr(exc, "orig", exc)).lower()
+        if "unique constraint failed" in message and "roles.name" in message:
+            raise RoleAlreadyExistsError("Role with this name already exists") from exc
+        raise
     return db_role
 
 
@@ -101,14 +108,18 @@ async def update_role(
         raise SuperAdminRoleImmutableError("SuperAdmin role is immutable")
 
     if name is not None and name != db_role.name:
-        existing_role = await _get_role_by_name(session, name)
-        if existing_role is not None and existing_role.id != db_role.id:
-            raise RoleAlreadyExistsError("Role with this name already exists")
         db_role.name = name
     if title_key is not None:
         db_role.title_key = title_key
 
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        message = str(getattr(exc, "orig", exc)).lower()
+        if "unique constraint failed" in message and "roles.name" in message:
+            raise RoleAlreadyExistsError("Role with this name already exists") from exc
+        raise
     return db_role
 
 
@@ -181,11 +192,11 @@ async def create_user_admin(
     password: str,
     role_id: int,
 ) -> User:
-    if await _get_user_by_username(session, username) is not None:
-        raise UsernameAlreadyExistsError("Username already exists")
-
-    if await session.get(Role, role_id) is None:
+    role_exists = await session.scalar(select(Role.id).where(Role.id == role_id).limit(1))
+    if role_exists is None:
         raise RoleNotFoundError("Role not found")
+
+    # Avoid an extra pre-check query; rely on DB uniqueness for username conflicts.
 
     db_user = User(
         username=username,
@@ -194,8 +205,14 @@ async def create_user_admin(
         permissions={},
     )
     session.add(db_user)
-    await session.flush()
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        message = str(getattr(exc, "orig", exc)).lower()
+        if "unique constraint failed" in message and "users.username" in message:
+            raise UsernameAlreadyExistsError("Username already exists") from exc
+        raise
     return db_user
 
 
@@ -209,9 +226,6 @@ async def update_user_admin(
     db_user = await get_user_by_id(session, user_id)
 
     if username is not None and username != db_user.username:
-        existing_user = await _get_user_by_username(session, username)
-        if existing_user is not None and existing_user.id != db_user.id:
-            raise UsernameAlreadyExistsError("Username already exists")
         db_user.username = username
 
     if role_id is not None:
@@ -219,7 +233,14 @@ async def update_user_admin(
             raise RoleNotFoundError("Role not found")
         db_user.role_id = role_id
 
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        message = str(getattr(exc, "orig", exc)).lower()
+        if "unique constraint failed" in message and "users.username" in message:
+            raise UsernameAlreadyExistsError("Username already exists") from exc
+        raise
     return db_user
 
 

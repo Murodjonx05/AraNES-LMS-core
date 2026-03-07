@@ -1,0 +1,344 @@
+{
+  "version": 1,
+  "updated_at": "2026-03-07T06:11:08.482942+00:00",
+  "entries": {
+    "request:GET /": {
+      "kind": "request",
+      "unique_key": "request:GET /",
+      "count": 1,
+      "fastest_ms": 1.63,
+      "slowest_ms": 1.63,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:47:26.371509+00:00",
+          "method": "GET",
+          "path": "/",
+          "status_code": 404,
+          "elapsed_ms": 1.63
+        }
+      ]
+    },
+    "request:GET /favicon.ico": {
+      "kind": "request",
+      "unique_key": "request:GET /favicon.ico",
+      "count": 1,
+      "fastest_ms": 1.194,
+      "slowest_ms": 1.194,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:47:26.475397+00:00",
+          "method": "GET",
+          "path": "/favicon.ico",
+          "status_code": 404,
+          "elapsed_ms": 1.194
+        }
+      ]
+    },
+    "request:GET /docs": {
+      "kind": "request",
+      "unique_key": "request:GET /docs",
+      "count": 2,
+      "fastest_ms": 0.783,
+      "slowest_ms": 0.974,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:47:29.466617+00:00",
+          "method": "GET",
+          "path": "/docs",
+          "status_code": 200,
+          "elapsed_ms": 0.974
+        },
+        {
+          "ts_utc": "2026-03-07T06:10:50.388489+00:00",
+          "method": "GET",
+          "path": "/docs",
+          "status_code": 200,
+          "elapsed_ms": 0.783
+        }
+      ]
+    },
+    "request:GET /openapi.json": {
+      "kind": "request",
+      "unique_key": "request:GET /openapi.json",
+      "count": 2,
+      "fastest_ms": 88.933,
+      "slowest_ms": 122.769,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:47:30.461769+00:00",
+          "method": "GET",
+          "path": "/openapi.json",
+          "status_code": 200,
+          "elapsed_ms": 122.769
+        },
+        {
+          "ts_utc": "2026-03-07T06:10:53.257375+00:00",
+          "method": "GET",
+          "path": "/openapi.json",
+          "status_code": 200,
+          "elapsed_ms": 88.933
+        }
+      ]
+    },
+    "src.auth.endpoints.auth.login": {
+      "kind": "function",
+      "unique_key": "src.auth.endpoints.auth.login",
+      "count": 1,
+      "fastest_ms": 74.105,
+      "slowest_ms": 74.105,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:48:31.069418+00:00",
+          "elapsed_ms": 74.105
+        }
+      ]
+    },
+    "request:POST /api/v1/auth/login": {
+      "kind": "request",
+      "unique_key": "request:POST /api/v1/auth/login",
+      "count": 1,
+      "fastest_ms": 77.733,
+      "slowest_ms": 77.733,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:48:31.070243+00:00",
+          "method": "POST",
+          "path": "/api/v1/auth/login",
+          "status_code": 200,
+          "elapsed_ms": 77.733
+        }
+      ]
+    },
+    "src.user_role.middlewares.get_current_user_with_role": {
+      "kind": "function",
+      "unique_key": "src.user_role.middlewares.get_current_user_with_role",
+      "count": 1,
+      "fastest_ms": 6.627,
+      "slowest_ms": 6.627,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:48:46.581747+00:00",
+          "elapsed_ms": 6.627
+        }
+      ]
+    },
+    "src.auth.endpoints.auth.me": {
+      "kind": "function",
+      "unique_key": "src.auth.endpoints.auth.me",
+      "count": 1,
+      "fastest_ms": 0.112,
+      "slowest_ms": 0.112,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:48:46.583104+00:00",
+          "elapsed_ms": 0.112
+        }
+      ]
+    },
+    "request:GET /api/v1/auth/me": {
+      "kind": "request",
+      "unique_key": "request:GET /api/v1/auth/me",
+      "count": 1,
+      "fastest_ms": 24.097,
+      "slowest_ms": 24.097,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:48:46.584573+00:00",
+          "method": "GET",
+          "path": "/api/v1/auth/me",
+          "status_code": 200,
+          "elapsed_ms": 24.097
+        }
+      ]
+    },
+    "request:GET /api/v1/rbac/roles": {
+      "kind": "request",
+      "unique_key": "request:GET /api/v1/rbac/roles",
+      "count": 1,
+      "fastest_ms": 9.527,
+      "slowest_ms": 9.527,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:48:54.513807+00:00",
+          "method": "GET",
+          "path": "/api/v1/rbac/roles",
+          "status_code": 200,
+          "elapsed_ms": 9.527
+        }
+      ]
+    },
+    "request:GET /api/v1/rbac/roles/1": {
+      "kind": "request",
+      "unique_key": "request:GET /api/v1/rbac/roles/1",
+      "count": 1,
+      "fastest_ms": 11.838,
+      "slowest_ms": 11.838,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:49:07.180475+00:00",
+          "method": "GET",
+          "path": "/api/v1/rbac/roles/1",
+          "status_code": 200,
+          "elapsed_ms": 11.838
+        }
+      ]
+    },
+    "request:GET /api/v1/rbac/users": {
+      "kind": "request",
+      "unique_key": "request:GET /api/v1/rbac/users",
+      "count": 1,
+      "fastest_ms": 9.737,
+      "slowest_ms": 9.737,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:49:47.177048+00:00",
+          "method": "GET",
+          "path": "/api/v1/rbac/users",
+          "status_code": 200,
+          "elapsed_ms": 9.737
+        }
+      ]
+    },
+    "request:GET /api/v1/rbac/users/1": {
+      "kind": "request",
+      "unique_key": "request:GET /api/v1/rbac/users/1",
+      "count": 1,
+      "fastest_ms": 7.48,
+      "slowest_ms": 7.48,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:49:55.242016+00:00",
+          "method": "GET",
+          "path": "/api/v1/rbac/users/1",
+          "status_code": 200,
+          "elapsed_ms": 7.48
+        }
+      ]
+    },
+    "request:GET /api/v1/i18n/small": {
+      "kind": "request",
+      "unique_key": "request:GET /api/v1/i18n/small",
+      "count": 1,
+      "fastest_ms": 6.492,
+      "slowest_ms": 6.492,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:50:02.019059+00:00",
+          "method": "GET",
+          "path": "/api/v1/i18n/small",
+          "status_code": 200,
+          "elapsed_ms": 6.492
+        }
+      ]
+    },
+    "request:GET /api/v1/i18n/small/role.super_admin.title": {
+      "kind": "request",
+      "unique_key": "request:GET /api/v1/i18n/small/role.super_admin.title",
+      "count": 1,
+      "fastest_ms": 18.485,
+      "slowest_ms": 18.485,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:50:19.789924+00:00",
+          "method": "GET",
+          "path": "/api/v1/i18n/small/role.super_admin.title",
+          "status_code": 200,
+          "elapsed_ms": 18.485
+        }
+      ]
+    },
+    "request:GET /api/v1/i18n/large": {
+      "kind": "request",
+      "unique_key": "request:GET /api/v1/i18n/large",
+      "count": 1,
+      "fastest_ms": 8.534,
+      "slowest_ms": 8.534,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:50:25.291204+00:00",
+          "method": "GET",
+          "path": "/api/v1/i18n/large",
+          "status_code": 200,
+          "elapsed_ms": 8.534
+        }
+      ]
+    },
+    "src.user_role.middlewares.get_current_actor": {
+      "kind": "function",
+      "unique_key": "src.user_role.middlewares.get_current_actor",
+      "count": 1,
+      "fastest_ms": 4.108,
+      "slowest_ms": 4.108,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:50:41.308641+00:00",
+          "elapsed_ms": 4.108
+        }
+      ]
+    },
+    "request:PUT /api/v1/i18n/large": {
+      "kind": "request",
+      "unique_key": "request:PUT /api/v1/i18n/large",
+      "count": 1,
+      "fastest_ms": 24.488,
+      "slowest_ms": 24.488,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:50:41.323821+00:00",
+          "method": "PUT",
+          "path": "/api/v1/i18n/large",
+          "status_code": 200,
+          "elapsed_ms": 24.488
+        }
+      ]
+    },
+    "request:GET /api/v1/i18n/large/course/description": {
+      "kind": "request",
+      "unique_key": "request:GET /api/v1/i18n/large/course/description",
+      "count": 1,
+      "fastest_ms": 7.0,
+      "slowest_ms": 7.0,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T05:50:54.439871+00:00",
+          "method": "GET",
+          "path": "/api/v1/i18n/large/course/description",
+          "status_code": 200,
+          "elapsed_ms": 7.0
+        }
+      ]
+    },
+    "request:GET /health": {
+      "kind": "request",
+      "unique_key": "request:GET /health",
+      "count": 1,
+      "fastest_ms": 1.632,
+      "slowest_ms": 1.632,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T06:11:01.736942+00:00",
+          "method": "GET",
+          "path": "/health",
+          "status_code": 200,
+          "elapsed_ms": 1.632
+        }
+      ]
+    },
+    "request:GET /ready": {
+      "kind": "request",
+      "unique_key": "request:GET /ready",
+      "count": 1,
+      "fastest_ms": 3.949,
+      "slowest_ms": 3.949,
+      "samples": [
+        {
+          "ts_utc": "2026-03-07T06:11:08.482880+00:00",
+          "method": "GET",
+          "path": "/ready",
+          "status_code": 200,
+          "elapsed_ms": 3.949
+        }
+      ]
+    }
+  }
+}
