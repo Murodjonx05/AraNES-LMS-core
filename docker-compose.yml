@@ -3,12 +3,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.core
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "8000:8000"
-    environment:
-      JWT_SECRET_KEY: change-me-before-production
-      REDIS_ENABLED: "true"
-      REDIS_URL: redis://redis:6379/0
     depends_on:
       - redis
 

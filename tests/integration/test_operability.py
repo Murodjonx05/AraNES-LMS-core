@@ -27,6 +27,43 @@ async def test_ready_is_open_and_reports_database_status(unauth_client: httpx.As
     assert payload["redis"] == {"enabled": False, "status": "disabled"}
 
 
+@pytest.mark.asyncio
+async def test_ready_hides_raw_database_exception_details(
+    client: httpx.AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+):
+    runtime = _get_runtime(client)
+    caplog.set_level(logging.ERROR, logger="aranes.operability")
+
+    class _BrokenConnection:
+        async def __aenter__(self):
+            raise RuntimeError("sqlite:///secret-db-path refused connection")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _BrokenEngine:
+        def connect(self):
+            return _BrokenConnection()
+
+    original_engine = runtime.engine
+    runtime.engine = _BrokenEngine()  # type: ignore[assignment]
+    try:
+        response = await client.get("/ready", headers={"X-Request-ID": "ready-failure-test"})
+    finally:
+        runtime.engine = original_engine
+
+    assert response.status_code == 503, response.text
+    payload = response.json()
+    assert payload["status"] == "not_ready"
+    assert payload["database"] == "error"
+    assert payload["detail"] == "Database is unavailable."
+    assert "secret-db-path" not in response.text
+
+    operability_records = [record for record in caplog.records if record.name == "aranes.operability"]
+    assert operability_records
+
+
 class _ToggleRedis:
     def __init__(self):
         self.alive = False

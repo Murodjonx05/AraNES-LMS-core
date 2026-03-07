@@ -9,7 +9,6 @@ from src.database import DbSession
 from src.user_role.models import Role, User
 from src.utils.profiler import profile_function
 
-
 @dataclass(slots=True)
 class CurrentActor:
     user_id: int
@@ -26,7 +25,6 @@ async def get_current_user_with_role(
     if not username:
         raise HTTPException(status_code=401, detail="Invalid token subject")
 
-    # Keep full model fetch for endpoints that need user/role payloads (e.g. /auth/me).
     result = await session.execute(
         select(User, Role)
         .join(Role, Role.id == User.role_id)

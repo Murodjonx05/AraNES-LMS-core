@@ -51,6 +51,16 @@ async def is_username_taken(
         return result.scalar_one_or_none() is not None
 
 
+async def _ensure_superadmin_role_exists(session: AsyncSession) -> None:
+    from src.user_role.models import Role
+
+    role_exists = await session.scalar(select(Role.id).where(Role.id == SUPERADMIN_ROLE_ID).limit(1))
+    if role_exists is None:
+        raise RuntimeError(
+            "SuperAdmin role does not exist. Seed default roles before creating the superuser."
+        )
+
+
 def _get_bool_env(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -149,6 +159,7 @@ async def create_super_user(
     if not password:
         raise ValueError("Password cannot be empty.")
     async with _session_scope_ctx(session_factory=session_factory) as session:
+        await _ensure_superadmin_role_exists(session)
         existing_user_id = await session.scalar(select(User.id).where(User.username == username).limit(1))
         if existing_user_id is not None:
             raise ValueError("Username already exists.")
@@ -184,6 +195,7 @@ async def ensure_super_user_with_credentials(
         raise ValueError("Password cannot be empty.")
 
     async with _session_scope_ctx(session_factory=session_factory) as session:
+        await _ensure_superadmin_role_exists(session)
         superuser_exists = await session.scalar(
             select(User.id).where(User.role_id == SUPERADMIN_ROLE_ID).limit(1)
         )

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from src.database import DbSession
+from src.user_role.cache import RbacCacheService, get_request_rbac_cache_service
 from src.user_role.crud import (
     create_role as crud_create_role,
     delete_role as crud_delete_role,
@@ -21,6 +22,7 @@ from src.user_role.exceptions import (
 from src.user_role.middlewares import require_permission
 from src.user_role.permission import (
     RBAC_CAN_MANAGE_PERMISSIONS,
+    RBAC_ROLES_READ,
     RBAC_ROLES_CREATE,
     RBAC_ROLES_DELETE,
     RBAC_ROLES_UPDATE,
@@ -35,22 +37,46 @@ from src.user_role.schemas import (
 roles_router = APIRouter(prefix="/roles", tags=["rbac:roles"])
 
 
-@roles_router.get("")
-async def list_roles(session: DbSession):
+@roles_router.get(
+    "",
+    dependencies=[Depends(require_permission(RBAC_ROLES_READ))],
+)
+async def list_roles(
+    session: DbSession,
+    cache_service: RbacCacheService = Depends(get_request_rbac_cache_service),
+):
     """
     Return a list of all roles as dictionaries.
     """
+    cached_roles = await cache_service.get_role_list()
+    if cached_roles is not None:
+        return cached_roles
     roles = await crud_list_roles(session)
-    return [serialize_role(role) for role in roles]
+    payload = [serialize_role(role) for role in roles]
+    await cache_service.set_role_list(payload)
+    return payload
 
 
-@roles_router.get("/{role_id}", response_model=RoleResponseSchema)
-async def get_role(role_id: int, session: DbSession):
+@roles_router.get(
+    "/{role_id}",
+    response_model=RoleResponseSchema,
+    dependencies=[Depends(require_permission(RBAC_ROLES_READ))],
+)
+async def get_role(
+    role_id: int,
+    session: DbSession,
+    cache_service: RbacCacheService = Depends(get_request_rbac_cache_service),
+):
+    cached_role = await cache_service.get_role(role_id)
+    if cached_role is not None:
+        return cached_role
     try:
         role = await crud_get_role_by_id(session, role_id)
     except RoleNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return serialize_role(role)
+    payload = serialize_role(role)
+    await cache_service.set_role(role_id, payload)
+    return payload
 
 
 @roles_router.post(
@@ -59,12 +85,19 @@ async def get_role(role_id: int, session: DbSession):
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_permission(RBAC_ROLES_CREATE))],
 )
-async def create_role(payload: RoleCreateSchema, session: DbSession):
+async def create_role(
+    payload: RoleCreateSchema,
+    session: DbSession,
+    cache_service: RbacCacheService = Depends(get_request_rbac_cache_service),
+):
     try:
         role = await crud_create_role(session, name=payload.name, title_key=payload.title_key)
     except RoleAlreadyExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return serialize_role(role)
+    serialized = serialize_role(role)
+    await cache_service.invalidate_role_list()
+    await cache_service.set_role(role.id, serialized)
+    return serialized
 
 
 @roles_router.patch(
@@ -72,7 +105,12 @@ async def create_role(payload: RoleCreateSchema, session: DbSession):
     response_model=RoleResponseSchema,
     dependencies=[Depends(require_permission(RBAC_ROLES_UPDATE))],
 )
-async def update_role(role_id: int, payload: RoleUpdateSchema, session: DbSession):
+async def update_role(
+    role_id: int,
+    payload: RoleUpdateSchema,
+    session: DbSession,
+    cache_service: RbacCacheService = Depends(get_request_rbac_cache_service),
+):
     try:
         role = await crud_update_role(
             session,
@@ -86,7 +124,10 @@ async def update_role(role_id: int, payload: RoleUpdateSchema, session: DbSessio
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except RoleAlreadyExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return serialize_role(role)
+    serialized = serialize_role(role)
+    await cache_service.invalidate_role_list()
+    await cache_service.set_role(role_id, serialized)
+    return serialized
 
 
 @roles_router.delete(
@@ -94,7 +135,11 @@ async def update_role(role_id: int, payload: RoleUpdateSchema, session: DbSessio
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_permission(RBAC_ROLES_DELETE))],
 )
-async def delete_role(role_id: int, session: DbSession) -> Response:
+async def delete_role(
+    role_id: int,
+    session: DbSession,
+    cache_service: RbacCacheService = Depends(get_request_rbac_cache_service),
+) -> Response:
     try:
         await crud_delete_role(session, role_id=role_id)
     except RoleNotFoundError as exc:
@@ -106,6 +151,8 @@ async def delete_role(role_id: int, session: DbSession) -> Response:
             status_code=409,
             detail={"message": str(exc), "user_count": exc.user_count},
         ) from exc
+    await cache_service.invalidate_role(role_id)
+    await cache_service.invalidate_role_list()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -117,6 +164,7 @@ async def patch_role_permissions(
     role_id: int,
     permissions: PermissionPatchSchema,
     session: DbSession,
+    cache_service: RbacCacheService = Depends(get_request_rbac_cache_service),
 ):
     """
     Update the permissions of a role, unless it's the SuperAdmin role.
@@ -133,17 +181,27 @@ async def patch_role_permissions(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except InvalidPermissionPatchError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return serialize_role(updated_role)
+    serialized = serialize_role(updated_role)
+    await cache_service.invalidate_role_list()
+    await cache_service.set_role(role_id, serialized)
+    return serialized
 
 
 @roles_router.post(
     "/reset",
     dependencies=[Depends(require_permission(RBAC_CAN_MANAGE_PERMISSIONS))],
 )
-async def reset_role_permissions(session: DbSession):
+async def reset_role_permissions(
+    session: DbSession,
+    cache_service: RbacCacheService = Depends(get_request_rbac_cache_service),
+):
     """
     Reset permissions for all roles except the SuperAdmin role.
     Returns the count of updated roles.
     """
+    roles = await crud_list_roles(session)
     updated_count = await crud_reset_role_permissions(session)
+    for role in roles:
+        await cache_service.invalidate_role(role.id)
+    await cache_service.invalidate_role_list()
     return {"updated": updated_count}

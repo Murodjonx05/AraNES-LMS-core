@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from src.database import DbSession
+from src.user_role.cache import RbacCacheService, get_request_rbac_cache_service
 from src.user_role.crud import (
     create_or_append_role_permissions_no_overwrite,
 )
@@ -20,7 +21,11 @@ role_registry_router = APIRouter(prefix="/roles", tags=["rbac:roles"])
     "/role-registry/",
     dependencies=[Depends(require_permission(RBAC_CAN_MANAGE_PERMISSIONS))],
 )
-async def registry_roles_once_if_not_exist(payload: RoleRegistrySchema, session: DbSession):
+async def registry_roles_once_if_not_exist(
+    payload: RoleRegistrySchema,
+    session: DbSession,
+    cache_service: RbacCacheService = Depends(get_request_rbac_cache_service),
+):
     """
     Append permissions to an existing role without overwriting existing keys.
     Does not create a new role.
@@ -43,6 +48,9 @@ async def registry_roles_once_if_not_exist(payload: RoleRegistrySchema, session:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RoleNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    await cache_service.invalidate_role(result.role_id)
+    await cache_service.invalidate_role_list()
 
     return {
         "status": result.status,

@@ -77,6 +77,10 @@ Auth flow is header-only:
 - `PATCH /api/v1/rbac/users/{user_id}/permissions`
 - `POST /api/v1/rbac/users/reset`
 
+Read access to RBAC and i18n resources is permission-gated. Default `Admin` and `SuperAdmin`
+roles can read them; lower roles cannot unless explicitly granted via role/user permissions or
+plugin-provided permission registration.
+
 ### i18n
 
 - `GET /api/v1/i18n/small`
@@ -114,6 +118,14 @@ At minimum, set:
 export JWT_SECRET_KEY="replace-with-a-real-secret"
 ```
 
+There are two common runtime modes:
+
+- Native app + Docker Redis:
+  use `.env` with `REDIS_URL=redis://localhost:6379/0`
+- Docker app + Docker Redis:
+  Docker also reads `.env`, but `docker-compose.yml` overrides `REDIS_URL` to
+  `redis://redis:6379/0` inside the container
+
 Optional overrides include `DATABASE_URL`, `HOST`, `PORT`, and CORS settings.
 
 Useful operational toggles:
@@ -129,6 +141,28 @@ export REDIS_URL="redis://localhost:6379/0"
 export REDIS_DEFAULT_TTL_SECONDS="3600"
 export REDIS_HEARTBEAT_ENABLED="true"
 export REDIS_HEARTBEAT_SCHEDULE_SECONDS="60,600,1200,3600,14400,28800,43200"
+```
+
+### Docker Compose
+
+Do not hardcode secrets in `docker-compose.yml`.
+
+Use `.env` as the shared configuration source:
+
+```bash
+docker compose up --build
+```
+
+Compose reads `.env`, then overrides only `REDIS_URL` for the containerized app because:
+
+- native app needs `redis://localhost:6379/0`
+- Docker app needs `redis://redis:6379/0`
+
+If you run the app natively and only Redis in Docker, keep using `.env` and set:
+
+```bash
+export REDIS_ENABLED="true"
+export REDIS_URL="redis://localhost:6379/0"
 ```
 
 ### 4. Apply migrations
@@ -233,6 +267,34 @@ Repeatable wrapper:
 
 ```bash
 ./scripts/profile_tests.sh
+```
+
+Integration tests now run with app profiling enabled by default, so request/function samples are
+written automatically into `logs/profile.log.json` unless you override the log directory.
+
+```bash
+./scripts/profile_tests.sh
+```
+
+Optional custom profile log directory:
+
+```bash
+TEST_PROFILE_LOG_DIR=./logs ./scripts/profile_tests.sh
+```
+
+Request profiling and function profiling can be controlled separately:
+
+```bash
+export APP_PROFILING_ENABLED=true
+export APP_FUNCTION_PROFILING_ENABLED=false
+```
+
+Decorator override example:
+
+```python
+@profile_function(enabled=False)
+async def cheap_helper():
+    ...
 ```
 
 ## Operational Notes

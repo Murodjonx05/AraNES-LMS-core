@@ -1,31 +1,52 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import SplitResult, urlsplit
 
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.routing import APIRoute
-from starlette.routing import Match
 
 _LOCAL_CLIENT_BASE_URL = "http://inprocess.local"
 _RESOLVER_STATE_KEY = "inprocess_http_resolver"
+_INTERNAL_HOST_ALLOWLIST = frozenset({"inprocess.local"})
 
 
 class AppHttpRouteResolver:
     def __init__(self, app: FastAPI):
         self._app = app
-        self._api_routes = [
-            route
-            for route in app.routes
-            if isinstance(route, APIRoute) and route.path.startswith("/api")
-        ]
+        self._static_api_routes: set[tuple[str, str]] = set()
+        self._dynamic_api_routes: list[tuple[set[str], re.Pattern[str]]] = []
+        for route in app.routes:
+            if not isinstance(route, APIRoute) or not route.path.startswith("/api"):
+                continue
+            methods = {method.upper() for method in (route.methods or set())}
+            if "{" in route.path:
+                self._dynamic_api_routes.append((methods, route.path_regex))
+            else:
+                for method in methods:
+                    self._static_api_routes.add((method, route.path))
         self._route_match_cache: dict[tuple[str, str], bool] = {}
-        self._local_client = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url=_LOCAL_CLIENT_BASE_URL,
-        )
-        self._external_client = httpx.AsyncClient()
+        self._local_client: httpx.AsyncClient | None = None
+        self._external_client: httpx.AsyncClient | None = None
+
+    def _get_local_client(self) -> httpx.AsyncClient:
+        client = self._local_client
+        if client is None:
+            client = httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=self._app),
+                base_url=_LOCAL_CLIENT_BASE_URL,
+            )
+            self._local_client = client
+        return client
+
+    def _get_external_client(self) -> httpx.AsyncClient:
+        client = self._external_client
+        if client is None:
+            client = httpx.AsyncClient()
+            self._external_client = client
+        return client
 
     def _is_local_api_path(self, method: str, path: str) -> bool:
         if not path.startswith("/api"):
@@ -35,15 +56,14 @@ class AppHttpRouteResolver:
         if cached is not None:
             return cached
 
-        scope = {
-            "type": "http",
-            "method": cache_key[0],
-            "path": path,
-            "root_path": "",
-        }
-        for route in self._api_routes:
-            match, _ = route.matches(scope)
-            if match == Match.FULL:
+        if cache_key in self._static_api_routes:
+            self._route_match_cache[cache_key] = True
+            return True
+
+        for methods, path_regex in self._dynamic_api_routes:
+            if cache_key[0] not in methods:
+                continue
+            if path_regex.match(path):
                 self._route_match_cache[cache_key] = True
                 return True
         self._route_match_cache[cache_key] = False
@@ -52,7 +72,12 @@ class AppHttpRouteResolver:
     def _is_local_request(self, method: str, url: str | httpx.URL) -> tuple[bool, SplitResult]:
         parts = urlsplit(str(url))
         path = parts.path or "/"
-        return self._is_local_api_path(method, path), parts
+        if not parts.scheme and not parts.netloc:
+            return self._is_local_api_path(method, path), parts
+
+        hostname = (parts.hostname or "").lower()
+        is_allowed_internal_host = hostname in _INTERNAL_HOST_ALLOWLIST
+        return is_allowed_internal_host and self._is_local_api_path(method, path), parts
 
     async def request(
         self,
@@ -65,18 +90,22 @@ class AppHttpRouteResolver:
             local_url = parts.path or "/"
             if parts.query:
                 local_url = f"{local_url}?{parts.query}"
-            return await self._local_client.request(method, local_url, **kwargs)
+            return await self._get_local_client().request(method, local_url, **kwargs)
 
         if not parts.scheme or not parts.netloc:
             raise ValueError(
                 "External requests must use an absolute URL. "
                 f"Received relative non-local URL: {url!s}"
             )
-        return await self._external_client.request(method, str(url), **kwargs)
+        return await self._get_external_client().request(method, str(url), **kwargs)
 
     async def aclose(self) -> None:
-        await self._local_client.aclose()
-        await self._external_client.aclose()
+        if self._local_client is not None:
+            await self._local_client.aclose()
+            self._local_client = None
+        if self._external_client is not None:
+            await self._external_client.aclose()
+            self._external_client = None
 
 
 class InternalAwareHttpClient:

@@ -5,6 +5,7 @@ import shutil
 import asyncio
 import hashlib
 import sqlite3
+import time
 import uuid
 from pathlib import Path
 from typing import AsyncIterator
@@ -19,12 +20,55 @@ from fastapi import FastAPI
 TEST_JWT_SECRET = "test-secret-key-with-32-byte-minimum!!"
 TEST_CORS_ORIGIN = "http://testserver"
 TEST_PBKDF2_ITERATIONS = "1"
-TEST_PROFILING_ENABLED = "false"
 TEST_RATE_LIMIT_ENABLED = "false"
 TEST_REDIS_ENABLED = "false"
 
 # Cached config to avoid rebuilding for each test
 _cached_app_config = None
+
+
+def _get_test_env(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip()
+
+
+TEST_PROFILING_ENABLED = "false"
+TEST_REQUEST_PROFILING_ENABLED = "true"
+TEST_FUNCTION_PROFILING_ENABLED = "false"
+TEST_INTEGRATION_TEST_PROFILING_ENABLED = "false"
+TEST_PROFILE_LOG_DIR = _get_test_env("TEST_PROFILE_LOG_DIR", "")
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item: pytest.Item):
+    if _get_test_env("TEST_INTEGRATION_TEST_PROFILING_ENABLED", TEST_INTEGRATION_TEST_PROFILING_ENABLED).lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        yield
+        return
+
+    from src.utils.profiler import emit_function_profile
+
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        emit_function_profile(
+            function_name=f"integration_test:{item.nodeid}",
+            elapsed_ms=(time.perf_counter() - start) * 1000.0,
+        )
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    del session, exitstatus
+    from src.utils.profiler import flush_profile_writes
+
+    flush_profile_writes()
 
 
 def _integration_template_cache_key(repo_root: Path) -> str:
@@ -34,7 +78,9 @@ def _integration_template_cache_key(repo_root: Path) -> str:
         repo_root / "migrations" / "env.py",
         repo_root / "src" / "startup" / "bootstrap.py",
         repo_root / "src" / "user_role" / "bootstrap.py",
+        repo_root / "src" / "user_role" / "permission.py",
         repo_root / "src" / "i18n" / "bootstrap.py",
+        repo_root / "src" / "i18n" / "permission.py",
         repo_root / "src" / "i18n" / "translates.py",
         repo_root / "src" / "user_role" / "translates.py",
         repo_root / "src" / "user_role" / "defaults.py",
@@ -44,9 +90,15 @@ def _integration_template_cache_key(repo_root: Path) -> str:
     for path in watched_paths:
         if not path.exists():
             continue
-        hasher.update(str(path.relative_to(repo_root)).encode("utf-8"))
+        rel_path = str(path.relative_to(repo_root)).encode("utf-8")
+        stat = path.stat()
+        # Content-hash of every migration on each session is expensive.
+        # mtime_ns + size is enough to invalidate templates when files change.
+        hasher.update(rel_path)
         hasher.update(b"\0")
-        hasher.update(path.read_bytes())
+        hasher.update(str(stat.st_size).encode("ascii"))
+        hasher.update(b":")
+        hasher.update(str(stat.st_mtime_ns).encode("ascii"))
         hasher.update(b"\0")
     return hasher.hexdigest()[:16]
 
@@ -98,6 +150,9 @@ def migrated_db_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     os.environ["CORS_ALLOW_CREDENTIALS"] = "false"
     os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
     os.environ["APP_PROFILING_ENABLED"] = TEST_PROFILING_ENABLED
+    os.environ["APP_FUNCTION_PROFILING_ENABLED"] = TEST_FUNCTION_PROFILING_ENABLED
+    if TEST_PROFILE_LOG_DIR:
+        os.environ["APP_PROFILE_LOG_DIR"] = TEST_PROFILE_LOG_DIR
     os.environ["RATE_LIMIT_ENABLED"] = TEST_RATE_LIMIT_ENABLED
     os.environ["REDIS_ENABLED"] = TEST_REDIS_ENABLED
 
@@ -131,6 +186,9 @@ def seeded_db_template(migrated_db_template: Path) -> Path:
     os.environ["CORS_ALLOW_CREDENTIALS"] = "false"
     os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
     os.environ["APP_PROFILING_ENABLED"] = TEST_PROFILING_ENABLED
+    os.environ["APP_FUNCTION_PROFILING_ENABLED"] = TEST_FUNCTION_PROFILING_ENABLED
+    if TEST_PROFILE_LOG_DIR:
+        os.environ["APP_PROFILE_LOG_DIR"] = TEST_PROFILE_LOG_DIR
     os.environ["RATE_LIMIT_ENABLED"] = TEST_RATE_LIMIT_ENABLED
     os.environ["REDIS_ENABLED"] = TEST_REDIS_ENABLED
     os.environ["BOOTSTRAP_SUPERUSER_CREATE"] = "true"
@@ -145,8 +203,8 @@ def seeded_db_template(migrated_db_template: Path) -> Path:
         reset_default_runtime()
         runtime = build_runtime(build_app_config())
         try:
-            await ensure_initial_super_user(runtime=runtime)
             await run_bootstrap_seeding(runtime=runtime)
+            await ensure_initial_super_user(runtime=runtime)
         finally:
             await runtime.engine.dispose()
             reset_default_runtime()
@@ -181,6 +239,9 @@ async def integration_app(
     os.environ["CORS_ALLOW_CREDENTIALS"] = "false"
     os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
     os.environ["APP_PROFILING_ENABLED"] = TEST_PROFILING_ENABLED
+    os.environ["APP_FUNCTION_PROFILING_ENABLED"] = TEST_FUNCTION_PROFILING_ENABLED
+    if TEST_PROFILE_LOG_DIR:
+        os.environ["APP_PROFILE_LOG_DIR"] = TEST_PROFILE_LOG_DIR
     os.environ["RATE_LIMIT_ENABLED"] = TEST_RATE_LIMIT_ENABLED
     os.environ["REDIS_ENABLED"] = TEST_REDIS_ENABLED
     os.environ["BOOTSTRAP_SUPERUSER_CREATE"] = "false"
@@ -195,6 +256,8 @@ async def integration_app(
     reset_default_runtime()
     runtime = build_runtime(build_app_config())
     app = create_app(runtime)
+    os.environ["APP_PROFILING_ENABLED"] = TEST_REQUEST_PROFILING_ENABLED
+    os.environ["APP_FUNCTION_PROFILING_ENABLED"] = TEST_FUNCTION_PROFILING_ENABLED
 
     try:
         yield app
@@ -220,6 +283,9 @@ async def client(
     monkeypatch.setenv("CORS_ALLOW_CREDENTIALS", "false")
     monkeypatch.setenv("PBKDF2_ITERATIONS", TEST_PBKDF2_ITERATIONS)
     monkeypatch.setenv("APP_PROFILING_ENABLED", TEST_PROFILING_ENABLED)
+    monkeypatch.setenv("APP_FUNCTION_PROFILING_ENABLED", TEST_FUNCTION_PROFILING_ENABLED)
+    if TEST_PROFILE_LOG_DIR:
+        monkeypatch.setenv("APP_PROFILE_LOG_DIR", TEST_PROFILE_LOG_DIR)
     monkeypatch.setenv("RATE_LIMIT_ENABLED", TEST_RATE_LIMIT_ENABLED)
     monkeypatch.setenv("REDIS_ENABLED", TEST_REDIS_ENABLED)
     # DB template is already seeded and includes the superuser.
@@ -241,6 +307,8 @@ async def client(
     reset_default_runtime()
     runtime = build_runtime(_cached_app_config)
     integration_app.state.runtime = runtime
+    monkeypatch.setenv("APP_PROFILING_ENABLED", TEST_REQUEST_PROFILING_ENABLED)
+    monkeypatch.setenv("APP_FUNCTION_PROFILING_ENABLED", TEST_FUNCTION_PROFILING_ENABLED)
     if hasattr(integration_app.state, auth_dependencies._ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY):
         delattr(integration_app.state, auth_dependencies._ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY)
 
@@ -275,6 +343,9 @@ async def unauth_client(
     os.environ["CORS_ALLOW_CREDENTIALS"] = "false"
     os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
     os.environ["APP_PROFILING_ENABLED"] = TEST_PROFILING_ENABLED
+    os.environ["APP_FUNCTION_PROFILING_ENABLED"] = TEST_FUNCTION_PROFILING_ENABLED
+    if TEST_PROFILE_LOG_DIR:
+        os.environ["APP_PROFILE_LOG_DIR"] = TEST_PROFILE_LOG_DIR
     os.environ["RATE_LIMIT_ENABLED"] = TEST_RATE_LIMIT_ENABLED
     os.environ["REDIS_ENABLED"] = TEST_REDIS_ENABLED
     os.environ["BOOTSTRAP_SUPERUSER_CREATE"] = "false"
@@ -289,13 +360,14 @@ async def unauth_client(
     global _cached_app_config
     if _cached_app_config is None:
         _cached_app_config = build_app_config()
-    
-    # Update DATABASE_URL in cached config
+
     _cached_app_config.DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
-    
+
     reset_default_runtime()
     runtime = build_runtime(_cached_app_config)
     app = create_app(runtime)
+    os.environ["APP_PROFILING_ENABLED"] = TEST_REQUEST_PROFILING_ENABLED
+    os.environ["APP_FUNCTION_PROFILING_ENABLED"] = TEST_FUNCTION_PROFILING_ENABLED
 
     try:
         transport = httpx.ASGITransport(app=app)
@@ -315,6 +387,29 @@ async def superuser_tokens(integration_app: FastAPI) -> dict[str, str]:
     runtime = integration_app.state.runtime
     assert runtime is not None
     return {"access": issue_access_token("superuser", security=runtime.security)}
+
+
+@pytest_asyncio.fixture
+async def admin_tokens(integration_app: FastAPI) -> dict[str, str]:
+    from src.auth.service import hash_password, issue_access_token
+    from src.user_role.models import User
+
+    runtime = integration_app.state.runtime
+    assert runtime is not None
+
+    username = f"admin{uuid.uuid4().hex[:10]}"
+    async with runtime.session_factory() as session:
+        session.add(
+            User(
+                username=username,
+                password=hash_password("StrongPass123"),
+                role_id=2,
+                permissions={},
+            )
+        )
+        await session.commit()
+
+    return {"username": username, "access": issue_access_token(username, security=runtime.security)}
 
 
 @pytest_asyncio.fixture

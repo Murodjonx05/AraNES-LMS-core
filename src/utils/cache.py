@@ -81,7 +81,17 @@ class RedisCacheService:
             return None
         if raw is None:
             return None
-        return json.loads(raw)
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            try:
+                await self.client.delete(cache_key)
+            except Exception:
+                self.mark_unavailable()
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return payload
 
     async def set_json(
         self,

@@ -26,6 +26,7 @@ PermissionPatch = dict[str, bool]
 @dataclass(slots=True)
 class RoleRegistryResult:
     status: str
+    role_id: int
     role: str
     permissions: PermissionPatch
 
@@ -315,6 +316,7 @@ async def create_or_append_role_permissions_no_overwrite(
     await session.commit()
     return RoleRegistryResult(
         status="updated",
+        role_id=existing_role.id,
         role=existing_role.name,
         permissions=dict(existing_role.permissions or {}),
     )

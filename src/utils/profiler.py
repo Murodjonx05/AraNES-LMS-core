@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import atexit
 import functools
 import inspect
 import json
 import os
-import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,13 +13,18 @@ from typing import Any, Callable, ParamSpec, TypeVar
 P = ParamSpec("P")
 R = TypeVar("R")
 
-_LOCK = threading.Lock()
+from threading import Lock
+
+_LOCK = Lock()
 _LOG_PATH: Path | None = None
 _INITIALIZED = False
 _STATE: dict[str, Any] | None = None
+_WRITE_DIRTY = False
+_ATEXIT_REGISTERED = False
 
 _ENV_PROFILE_LOG_DIR = "APP_PROFILE_LOG_DIR"
 _ENV_PROFILE_ENABLED = "APP_PROFILING_ENABLED"
+_ENV_FUNCTION_PROFILE_ENABLED = "APP_FUNCTION_PROFILING_ENABLED"
 _MAX_SAMPLES_PER_KEY = 100
 
 
@@ -32,7 +37,7 @@ def _default_state() -> dict[str, Any]:
 
 
 def _ensure_initialized() -> None:
-    global _INITIALIZED, _LOG_PATH, _STATE
+    global _INITIALIZED, _LOG_PATH, _STATE, _ATEXIT_REGISTERED
     if _INITIALIZED:
         return
 
@@ -55,10 +60,20 @@ def _ensure_initialized() -> None:
         _STATE = _default_state()
         _LOG_PATH.write_text(json.dumps(_STATE, ensure_ascii=True, indent=2), encoding="utf-8")
     _INITIALIZED = True
+    if not _ATEXIT_REGISTERED:
+        atexit.register(_flush_profile_writes_sync)
+        _ATEXIT_REGISTERED = True
 
 
 def is_profiling_enabled() -> bool:
     raw = os.getenv(_ENV_PROFILE_ENABLED, "true").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def is_function_profiling_enabled() -> bool:
+    if not is_profiling_enabled():
+        return False
+    raw = os.getenv(_ENV_FUNCTION_PROFILE_ENABLED, "true").strip().lower()
     return raw not in {"0", "false", "no", "off"}
 
 
@@ -80,6 +95,34 @@ def _trim_samples_keep_extremes(samples: list[dict[str, Any]]) -> None:
         protected = {min_idx, max_idx}
         remove_idx = next((i for i in range(len(samples)) if i not in protected), 0)
         samples.pop(remove_idx)
+
+
+def _flush_profile_writes_sync() -> bool:
+    global _WRITE_DIRTY
+    if not is_profiling_enabled():
+        return True
+    _ensure_initialized()
+    with _LOCK:
+        if not _WRITE_DIRTY or _STATE is None or _LOG_PATH is None:
+            return True
+        payload = json.dumps(_STATE, ensure_ascii=True, indent=2)
+        log_path = _LOG_PATH
+        _WRITE_DIRTY = False
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(payload, encoding="utf-8")
+        return True
+    except Exception:
+        with _LOCK:
+            _WRITE_DIRTY = True
+        return False
+
+
+def flush_profile_writes(timeout: float = 2.0) -> bool:
+    del timeout
+    if not is_profiling_enabled():
+        return True
+    return _flush_profile_writes_sync()
 
 
 def _append_sample(*, unique_key: str, kind: str, sample: dict[str, Any]) -> None:
@@ -116,10 +159,12 @@ def _append_sample(*, unique_key: str, kind: str, sample: dict[str, Any]) -> Non
         _trim_samples_keep_extremes(samples)
 
         _STATE["updated_at"] = datetime.now(timezone.utc).isoformat()
-        _LOG_PATH.write_text(json.dumps(_STATE, ensure_ascii=True, indent=2), encoding="utf-8")
-
+        global _WRITE_DIRTY
+        _WRITE_DIRTY = True
 
 def _emit_function_profile(function_name: str, elapsed_ms: float) -> None:
+    if not is_function_profiling_enabled():
+        return
     _append_sample(
         unique_key=function_name,
         kind="function",
@@ -128,6 +173,12 @@ def _emit_function_profile(function_name: str, elapsed_ms: float) -> None:
             "elapsed_ms": round(elapsed_ms, 3),
         },
     )
+
+
+def emit_function_profile(*, function_name: str, elapsed_ms: float) -> None:
+    if not is_function_profiling_enabled():
+        return
+    _emit_function_profile(function_name, elapsed_ms)
 
 
 def emit_request_profile(
@@ -153,13 +204,20 @@ def emit_request_profile(
     )
 
 
-def profile_function(name: str | None = None) -> Callable[[Callable[P, R]], Callable[P, R]]:
+def profile_function(
+    name: str | None = None,
+    *,
+    enabled: bool | None = None,
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
     def _decorator(func: Callable[P, R]) -> Callable[P, R]:
         function_name = name or f"{func.__module__}.{func.__qualname__}"
+        profiling_enabled = is_function_profiling_enabled() if enabled is None else bool(enabled)
         if inspect.iscoroutinefunction(func):
 
             @functools.wraps(func)
             async def _async_wrapper(*args: P.args, **kwargs: P.kwargs):  # type: ignore[misc]
+                if not profiling_enabled:
+                    return await func(*args, **kwargs)  # type: ignore[arg-type]
                 start = time.perf_counter()
                 try:
                     return await func(*args, **kwargs)  # type: ignore[arg-type]
@@ -170,6 +228,8 @@ def profile_function(name: str | None = None) -> Callable[[Callable[P, R]], Call
 
         @functools.wraps(func)
         def _sync_wrapper(*args: P.args, **kwargs: P.kwargs):  # type: ignore[misc]
+            if not profiling_enabled:
+                return func(*args, **kwargs)
             start = time.perf_counter()
             try:
                 return func(*args, **kwargs)
@@ -182,8 +242,11 @@ def profile_function(name: str | None = None) -> Callable[[Callable[P, R]], Call
 
 
 __all__ = [
+    "emit_function_profile",
     "emit_request_profile",
+    "flush_profile_writes",
     "ensure_profile_log_file",
+    "is_function_profiling_enabled",
     "is_profiling_enabled",
     "profile_function",
 ]

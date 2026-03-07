@@ -129,7 +129,7 @@ async def test_authenticated_user_can_access_read_endpoints(
     ]
     for path in readable_paths:
         response = await client.get(path, headers=headers)
-        assert response.status_code == 200, f"{path}: {response.status_code} {response.text}"
+        assert response.status_code == 403, f"{path}: {response.status_code} {response.text}"
 
 
 @pytest.mark.asyncio
@@ -152,6 +152,23 @@ async def test_bootstrap_seeds_default_role_title_translations(
     assert payload["key"] == "role.super_admin.title"
     assert isinstance(payload["data"], dict)
     assert payload["data"].get("en")
+
+
+@pytest.mark.asyncio
+async def test_admin_can_access_read_endpoints(
+    client: httpx.AsyncClient,
+    admin_tokens: dict[str, str],
+):
+    headers = bearer_headers(admin_tokens["access"])
+    readable_paths = [
+        "/api/v1/i18n/small",
+        "/api/v1/i18n/large",
+        "/api/v1/rbac/roles",
+        "/api/v1/rbac/users",
+    ]
+    for path in readable_paths:
+        response = await client.get(path, headers=headers)
+        assert response.status_code == 200, f"{path}: {response.status_code} {response.text}"
 
 
 @pytest.mark.asyncio

@@ -4,7 +4,7 @@ import logging
 import time
 from uuid import uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
@@ -16,8 +16,8 @@ from src.auth.dependencies import require_access_token_payload
 from src.runtime import RuntimeContext, get_default_runtime
 from src.startup import lifespan
 from src.utils.inprocess_http import attach_inprocess_http
-from src.utils.profiler import emit_request_profile, ensure_profile_log_file, is_profiling_enabled
-from src.utils.rate_limit import InMemoryRateLimiter
+from src.utils.profiler import emit_request_profile
+from src.utils.rate_limit import InMemoryRateLimiter, RedisRateLimiter
 
 _REQUEST_LOGGER = logging.getLogger("aranes.request")
 _AUDIT_LOGGER = logging.getLogger("aranes.audit")
@@ -29,6 +29,8 @@ _RATE_LIMITED_PATHS = frozenset(
 )
 _AUDITED_PREFIXES = ("/api/v1/rbac", "/api/v1/i18n")
 _AUDITED_EXACT_PATHS = frozenset({"/api/v1/auth/reset"})
+_OPERABILITY_LOGGER = logging.getLogger("aranes.operability")
+_PROFILER_LOGGER = logging.getLogger("aranes.profiler")
 
 
 def _extract_actor_subject(request, runtime: RuntimeContext) -> str | None:
@@ -61,6 +63,33 @@ def _emit_structured_log(logger: logging.Logger, event: str, **payload: object) 
     logger.info(json.dumps({"event": event, **payload}, ensure_ascii=True, sort_keys=True))
 
 
+def _safe_emit_request_profile(
+    *,
+    method: str,
+    path: str,
+    status_code: int,
+    elapsed_ms: float,
+    request_id: str,
+) -> None:
+    try:
+        emit_request_profile(
+            method=method,
+            path=path,
+            status_code=status_code,
+            elapsed_ms=elapsed_ms,
+        )
+    except Exception:
+        _PROFILER_LOGGER.exception(
+            "request profiler emit failed",
+            extra={
+                "request_id": request_id,
+                "method": method,
+                "path": path,
+                "status_code": status_code,
+            },
+        )
+
+
 async def _build_redis_health(runtime: RuntimeContext) -> dict[str, object]:
     cache_service = runtime.cache_service
     if not getattr(cache_service, "enabled", False):
@@ -75,12 +104,10 @@ async def _build_redis_health(runtime: RuntimeContext) -> dict[str, object]:
 
 def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
     runtime = runtime or get_default_runtime()
-    profiling_enabled = is_profiling_enabled()
-    if profiling_enabled:
-        ensure_profile_log_file()
     app = FastAPI(lifespan=lifespan)
     app.state.runtime = runtime
     app.state.rate_limiter = InMemoryRateLimiter()
+    app.state.redis_rate_limiter = RedisRateLimiter(runtime.cache_service)
 
     def _current_runtime() -> RuntimeContext:
         return getattr(app.state, "runtime", None) or runtime
@@ -92,20 +119,26 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
         return {"status": status, "service": "aranes-lms-core", "redis": redis}
 
     @app.get("/ready", tags=["system"])
-    async def ready():
+    async def ready(request: Request):
         active_runtime = _current_runtime()
         redis = await _build_redis_health(active_runtime)
         try:
             async with active_runtime.engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
         except Exception as exc:
+            request_id = getattr(request.state, "request_id", None) or request.headers.get("x-request-id") or uuid4().hex
+            _OPERABILITY_LOGGER.exception(
+                "database readiness check failed",
+                extra={"request_id": request_id},
+                exc_info=exc,
+            )
             return JSONResponse(
                 status_code=503,
                 content={
                     "status": "not_ready",
                     "database": "error",
                     "redis": redis,
-                    "detail": str(exc),
+                    "detail": "Database is unavailable.",
                 },
             )
         return {
@@ -118,21 +151,32 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
     @app.middleware("http")
     async def _observe_requests(request, call_next):
         active_runtime = _current_runtime()
+        app.state.redis_rate_limiter = RedisRateLimiter(active_runtime.cache_service)
         request_id = request.headers.get("x-request-id") or uuid4().hex
+        request.state.request_id = request_id
         start = time.perf_counter()
         status_code = 500
         actor_subject: str | None = None
         client_host = _client_host(request)
 
-        if (
-            active_runtime.config.RATE_LIMIT_ENABLED
-            and request.url.path in _RATE_LIMITED_PATHS
-            and not app.state.rate_limiter.allow(
-                f"{client_host}:{request.url.path}",
+        is_rate_limited = False
+        if active_runtime.config.RATE_LIMIT_ENABLED and request.url.path in _RATE_LIMITED_PATHS:
+            rate_limit_key = f"{client_host}:{request.url.path}"
+            redis_allowed = await app.state.redis_rate_limiter.allow(
+                rate_limit_key,
                 limit=active_runtime.config.RATE_LIMIT_MAX_REQUESTS,
                 window_seconds=active_runtime.config.RATE_LIMIT_WINDOW_SECONDS,
             )
-        ):
+            if redis_allowed is None:
+                is_rate_limited = not app.state.rate_limiter.allow(
+                    rate_limit_key,
+                    limit=active_runtime.config.RATE_LIMIT_MAX_REQUESTS,
+                    window_seconds=active_runtime.config.RATE_LIMIT_WINDOW_SECONDS,
+                )
+            else:
+                is_rate_limited = not redis_allowed
+
+        if is_rate_limited:
             response = JSONResponse(
                 status_code=429,
                 content={"detail": "Rate limit exceeded"},
@@ -145,13 +189,13 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
                 status_code = response.status_code
             except Exception:
                 elapsed_ms = (time.perf_counter() - start) * 1000.0
-                if profiling_enabled:
-                    emit_request_profile(
-                        method=request.method,
-                        path=request.url.path,
-                        status_code=status_code,
-                        elapsed_ms=elapsed_ms,
-                    )
+                _safe_emit_request_profile(
+                    method=request.method,
+                    path=request.url.path,
+                    status_code=status_code,
+                    elapsed_ms=elapsed_ms,
+                    request_id=request_id,
+                )
                 actor_subject = _extract_actor_subject(request, active_runtime)
                 if active_runtime.config.REQUEST_LOG_ENABLED:
                     _emit_structured_log(
@@ -171,13 +215,13 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
 
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         actor_subject = actor_subject or _extract_actor_subject(request, active_runtime)
-        if profiling_enabled:
-            emit_request_profile(
-                method=request.method,
-                path=request.url.path,
-                status_code=status_code,
-                elapsed_ms=elapsed_ms,
-            )
+        _safe_emit_request_profile(
+            method=request.method,
+            path=request.url.path,
+            status_code=status_code,
+            elapsed_ms=elapsed_ms,
+            request_id=request_id,
+        )
         if active_runtime.config.REQUEST_LOG_ENABLED:
             _emit_structured_log(
                 _REQUEST_LOGGER,

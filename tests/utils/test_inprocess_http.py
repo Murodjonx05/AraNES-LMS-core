@@ -25,6 +25,17 @@ class _CallRecorder:
         return self.label
 
 
+class _FakeAsyncClient:
+    def __init__(self, recorder: _CallRecorder):
+        self._recorder = recorder
+
+    async def request(self, method: str, url: str, **kwargs: Any) -> str:
+        return await self._recorder.request(method, url, **kwargs)
+
+    async def aclose(self) -> None:
+        return None
+
+
 class _ResolverRecorder:
     def __init__(self):
         self.calls: list[tuple[str, str | httpx.URL, dict[str, Any]]] = []
@@ -91,8 +102,8 @@ async def test_resolver_routes_local_and_external_targets(
     resolver = attach_inprocess_http(app)
     local = _CallRecorder("local")
     external = _CallRecorder("external")
-    monkeypatch.setattr(resolver._local_client, "request", local.request)
-    monkeypatch.setattr(resolver._external_client, "request", external.request)
+    monkeypatch.setattr(resolver, "_local_client", _FakeAsyncClient(local))
+    monkeypatch.setattr(resolver, "_external_client", _FakeAsyncClient(external))
 
     try:
         result = await resolver.request(method, url)
@@ -113,8 +124,8 @@ async def test_resolver_matches_dynamic_api_paths(monkeypatch: pytest.MonkeyPatc
     resolver = attach_inprocess_http(app)
     local = _CallRecorder("local")
     external = _CallRecorder("external")
-    monkeypatch.setattr(resolver._local_client, "request", local.request)
-    monkeypatch.setattr(resolver._external_client, "request", external.request)
+    monkeypatch.setattr(resolver, "_local_client", _FakeAsyncClient(local))
+    monkeypatch.setattr(resolver, "_external_client", _FakeAsyncClient(external))
 
     try:
         result = await resolver.request("GET", "/api/v1/rbac/users/123")
@@ -134,8 +145,8 @@ async def test_resolver_uses_external_http_for_non_local_absolute_url(
     resolver = attach_inprocess_http(app)
     local = _CallRecorder("local")
     external = _CallRecorder("external")
-    monkeypatch.setattr(resolver._local_client, "request", local.request)
-    monkeypatch.setattr(resolver._external_client, "request", external.request)
+    monkeypatch.setattr(resolver, "_local_client", _FakeAsyncClient(local))
+    monkeypatch.setattr(resolver, "_external_client", _FakeAsyncClient(external))
 
     try:
         result = await resolver.request("GET", "https://example.com/health")
@@ -143,6 +154,48 @@ async def test_resolver_uses_external_http_for_non_local_absolute_url(
         assert len(local.calls) == 0
         assert len(external.calls) == 1
         assert external.calls[0][1] == "https://example.com/health"
+    finally:
+        await close_inprocess_http(app)
+
+
+@pytest.mark.asyncio
+async def test_resolver_treats_absolute_external_api_urls_as_external(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    app = _build_app()
+    resolver = attach_inprocess_http(app)
+    local = _CallRecorder("local")
+    external = _CallRecorder("external")
+    monkeypatch.setattr(resolver, "_local_client", _FakeAsyncClient(local))
+    monkeypatch.setattr(resolver, "_external_client", _FakeAsyncClient(external))
+
+    try:
+        result = await resolver.request("GET", "https://example.com/api/v1/auth/me")
+        assert result == "external"
+        assert len(local.calls) == 0
+        assert len(external.calls) == 1
+        assert external.calls[0][1] == "https://example.com/api/v1/auth/me"
+    finally:
+        await close_inprocess_http(app)
+
+
+@pytest.mark.asyncio
+async def test_resolver_allows_absolute_api_urls_for_explicit_internal_host(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    app = _build_app()
+    resolver = attach_inprocess_http(app)
+    local = _CallRecorder("local")
+    external = _CallRecorder("external")
+    monkeypatch.setattr(resolver, "_local_client", _FakeAsyncClient(local))
+    monkeypatch.setattr(resolver, "_external_client", _FakeAsyncClient(external))
+
+    try:
+        result = await resolver.request("GET", "http://inprocess.local/api/v1/auth/me")
+        assert result == "local"
+        assert len(local.calls) == 1
+        assert local.calls[0][1] == "/api/v1/auth/me"
+        assert len(external.calls) == 0
     finally:
         await close_inprocess_http(app)
 

@@ -4,6 +4,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import TypeVar
 
 from src.i18n.permission import (
+    I18N_CAN_READ_LARGE,
+    I18N_CAN_READ_SMALL,
     I18N_CAN_CREATE_LARGE,
     I18N_CAN_CREATE_SMALL,
     I18N_CAN_PATCH_LARGE,
@@ -15,58 +17,72 @@ from src.user_role.models import Role, User
 RBACModel = TypeVar("RBACModel", Role, User)
 
 RBAC_CAN_MANAGE_PERMISSIONS = "rbac_can_manage_permissions"
+RBAC_ROLES_READ = "rbac_roles_read"
 RBAC_ROLES_CREATE = "rbac_roles_create"
 RBAC_ROLES_UPDATE = "rbac_roles_update"
 RBAC_ROLES_DELETE = "rbac_roles_delete"
+RBAC_USERS_READ = "rbac_users_read"
 RBAC_USERS_CREATE = "rbac_users_create"
 RBAC_USERS_MANAGE = "rbac_users_manage"
 
 RBAC_ROLE_PERMISSION_DEFAULTS: dict[str, dict[str, bool]] = {
     "SuperAdmin": {
         RBAC_CAN_MANAGE_PERMISSIONS: True,
+        RBAC_ROLES_READ: True,
         RBAC_ROLES_CREATE: True,
         RBAC_ROLES_UPDATE: True,
         RBAC_ROLES_DELETE: True,
+        RBAC_USERS_READ: True,
         RBAC_USERS_CREATE: True,
         RBAC_USERS_MANAGE: True,
     },
     "Admin": {
         RBAC_CAN_MANAGE_PERMISSIONS: False,
+        RBAC_ROLES_READ: True,
         RBAC_ROLES_CREATE: False,
         RBAC_ROLES_UPDATE: False,
         RBAC_ROLES_DELETE: False,
+        RBAC_USERS_READ: True,
         RBAC_USERS_CREATE: False,
         RBAC_USERS_MANAGE: False,
     },
     "Teacher": {
         RBAC_CAN_MANAGE_PERMISSIONS: False,
+        RBAC_ROLES_READ: False,
         RBAC_ROLES_CREATE: False,
         RBAC_ROLES_UPDATE: False,
         RBAC_ROLES_DELETE: False,
+        RBAC_USERS_READ: False,
         RBAC_USERS_CREATE: False,
         RBAC_USERS_MANAGE: False,
     },
     "Student": {
         RBAC_CAN_MANAGE_PERMISSIONS: False,
+        RBAC_ROLES_READ: False,
         RBAC_ROLES_CREATE: False,
         RBAC_ROLES_UPDATE: False,
         RBAC_ROLES_DELETE: False,
+        RBAC_USERS_READ: False,
         RBAC_USERS_CREATE: False,
         RBAC_USERS_MANAGE: False,
     },
     "User": {
         RBAC_CAN_MANAGE_PERMISSIONS: False,
+        RBAC_ROLES_READ: False,
         RBAC_ROLES_CREATE: False,
         RBAC_ROLES_UPDATE: False,
         RBAC_ROLES_DELETE: False,
+        RBAC_USERS_READ: False,
         RBAC_USERS_CREATE: False,
         RBAC_USERS_MANAGE: False,
     },
     "Guest": {
         RBAC_CAN_MANAGE_PERMISSIONS: False,
+        RBAC_ROLES_READ: False,
         RBAC_ROLES_CREATE: False,
         RBAC_ROLES_UPDATE: False,
         RBAC_ROLES_DELETE: False,
+        RBAC_USERS_READ: False,
         RBAC_USERS_CREATE: False,
         RBAC_USERS_MANAGE: False,
     },
@@ -75,13 +91,17 @@ RBAC_ROLE_PERMISSION_DEFAULTS: dict[str, dict[str, bool]] = {
 REGISTERED_PERMISSION_KEYS: frozenset[str] = frozenset(
     {
         RBAC_CAN_MANAGE_PERMISSIONS,
+        RBAC_ROLES_READ,
         RBAC_ROLES_CREATE,
         RBAC_ROLES_UPDATE,
         RBAC_ROLES_DELETE,
+        RBAC_USERS_READ,
         RBAC_USERS_CREATE,
         RBAC_USERS_MANAGE,
+        I18N_CAN_READ_SMALL,
         I18N_CAN_CREATE_SMALL,
         I18N_CAN_PATCH_SMALL,
+        I18N_CAN_READ_LARGE,
         I18N_CAN_CREATE_LARGE,
         I18N_CAN_PATCH_LARGE,
     }
