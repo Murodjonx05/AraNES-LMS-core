@@ -401,4 +401,6 @@ app = create_app()
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    runtime = getattr(app.state, "runtime", None) or get_default_runtime()
+    uvicorn.run(app, host=runtime.config.HOST, port=runtime.config.PORT)

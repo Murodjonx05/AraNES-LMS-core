@@ -229,8 +229,8 @@ async def ensure_super_user_from_env_if_enabled(
     bootstrap_password = os.getenv(ENV_BOOTSTRAP_PASSWORD)
     if not username or not bootstrap_password:
         print(
-            "Superuser bootstrap requested but credentials are missing. "
-            f"Set {ENV_BOOTSTRAP_USERNAME} and {ENV_BOOTSTRAP_PASSWORD}."
+            "Superuser bootstrap requested but required credentials are missing. "
+            "Set the bootstrap username and password environment variables."
         )
         return False
 
