@@ -99,7 +99,7 @@ class CorsConfig:
         }
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     BASE_DIR: Path
     DATA_DIR: Path
