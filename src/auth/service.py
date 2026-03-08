@@ -27,7 +27,6 @@ from src.auth.revocation import (
     _extract_jti_and_exp,
     _get_cached_revocation_status,
     _normalize_expiry,
-    _resolve_revocation_identity,
     _revocation_metadata,
     _revoked_token_jtis,
     _set_cached_revocation_status,
