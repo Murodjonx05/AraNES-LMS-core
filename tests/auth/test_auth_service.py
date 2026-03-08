@@ -232,6 +232,34 @@ async def test_store_revoked_jti_upserts_and_cleans_expired_rows():
         await engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_store_revoked_jti_uses_portable_delete_then_insert(monkeypatch: pytest.MonkeyPatch):
+    engine = await _create_revocation_engine()
+    deleted_jtis: list[str] = []
+    original_delete = service.delete
+
+    def _tracking_delete(table):
+        statement = original_delete(table)
+
+        class _DeleteProxy:
+            def where(self, clause):
+                left = getattr(clause, "left", None)
+                right = getattr(clause, "right", None)
+                if getattr(left, "name", None) == "jti" and hasattr(right, "value"):
+                    deleted_jtis.append(right.value)
+                return statement.where(clause)
+
+        return _DeleteProxy()
+
+    monkeypatch.setattr(service, "delete", _tracking_delete)
+    try:
+        await service._store_revoked_jti(engine, "portable-jti", service._utc_now() + service.timedelta(minutes=1))
+    finally:
+        await engine.dispose()
+
+    assert "portable-jti" in deleted_jtis
+
+
 def test_explicit_security_and_engine_do_not_require_default_runtime():
     security = object()
     engine = object()

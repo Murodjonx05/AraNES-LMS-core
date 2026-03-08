@@ -105,6 +105,26 @@ def test_flush_profile_writes_uses_atomic_replace(tmp_path: Path, monkeypatch: p
     assert json.loads((tmp_path / "profile.log.json").read_text(encoding="utf-8"))["entries"]
 
 
+def test_profiler_initialization_uses_atomic_replace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    replaced: dict[str, str] = {}
+    original_replace = profiler.os.replace
+
+    def _record_replace(src: str, dst: str) -> None:
+        replaced["src"] = src
+        replaced["dst"] = dst
+        original_replace(src, dst)
+
+    monkeypatch.setattr(profiler.os, "replace", _record_replace)
+    module = _reload_profiler_module(tmp_path, monkeypatch)
+
+    log_path = module.ensure_profile_log_file()
+
+    assert log_path == tmp_path / "profile.log.json"
+    assert Path(replaced["dst"]) == log_path
+    assert Path(replaced["src"]) != log_path
+    assert json.loads(log_path.read_text(encoding="utf-8"))["entries"] == {}
+
+
 @pytest.mark.asyncio
 async def test_profile_retains_100_samples_and_keeps_extremes(
     tmp_path: Path,

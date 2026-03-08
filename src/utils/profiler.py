@@ -37,33 +37,58 @@ def _default_state() -> dict[str, Any]:
     }
 
 
+def _atomic_write_text(path: Path, payload: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f"{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as tmp_file:
+        tmp_file.write(payload)
+        tmp_file.flush()
+        os.fsync(tmp_file.fileno())
+        temp_path = tmp_file.name
+    try:
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+
+
 def _ensure_initialized() -> None:
     global _INITIALIZED, _LOG_PATH, _STATE, _ATEXIT_REGISTERED
-    if _INITIALIZED:
-        return
+    with _LOCK:
+        if _INITIALIZED:
+            return
 
-    log_dir_env = os.getenv(_ENV_PROFILE_LOG_DIR, "").strip()
-    default_base_dir = Path(__file__).resolve().parents[2]
-    log_dir = Path(log_dir_env) if log_dir_env else (default_base_dir / "logs")
+        log_dir_env = os.getenv(_ENV_PROFILE_LOG_DIR, "").strip()
+        default_base_dir = Path(__file__).resolve().parents[2]
+        log_dir = Path(log_dir_env) if log_dir_env else (default_base_dir / "logs")
 
-    log_dir.mkdir(parents=True, exist_ok=True)
-    _LOG_PATH = log_dir / "profile.log.json"
-    if _LOG_PATH.exists():
-        try:
-            raw = json.loads(_LOG_PATH.read_text(encoding="utf-8"))
-            if isinstance(raw, dict) and isinstance(raw.get("entries"), dict):
-                _STATE = raw
-            else:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        _LOG_PATH = log_dir / "profile.log.json"
+        if _LOG_PATH.exists():
+            try:
+                raw = json.loads(_LOG_PATH.read_text(encoding="utf-8"))
+                if isinstance(raw, dict) and isinstance(raw.get("entries"), dict):
+                    _STATE = raw
+                else:
+                    _STATE = _default_state()
+            except Exception:
                 _STATE = _default_state()
-        except Exception:
+        else:
             _STATE = _default_state()
-    else:
-        _STATE = _default_state()
-        _LOG_PATH.write_text(json.dumps(_STATE, ensure_ascii=True, indent=2), encoding="utf-8")
-    _INITIALIZED = True
-    if not _ATEXIT_REGISTERED:
-        atexit.register(_flush_profile_writes_sync)
-        _ATEXIT_REGISTERED = True
+            _atomic_write_text(_LOG_PATH, json.dumps(_STATE, ensure_ascii=True, indent=2))
+        _INITIALIZED = True
+        if not _ATEXIT_REGISTERED:
+            atexit.register(_flush_profile_writes_sync)
+            _ATEXIT_REGISTERED = True
 
 
 def is_profiling_enabled() -> bool:
@@ -110,27 +135,9 @@ def _flush_profile_writes_sync() -> bool:
         log_path = _LOG_PATH
         _WRITE_DIRTY = False
     try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=log_path.parent,
-            prefix=f"{log_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as tmp_file:
-            tmp_file.write(payload)
-            tmp_file.flush()
-            os.fsync(tmp_file.fileno())
-            temp_path = tmp_file.name
-        os.replace(temp_path, log_path)
+        _atomic_write_text(log_path, payload)
         return True
     except Exception:
-        if "temp_path" in locals():
-            try:
-                os.unlink(temp_path)
-            except OSError:
-                pass
         with _LOCK:
             _WRITE_DIRTY = True
         return False

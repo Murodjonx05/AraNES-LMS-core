@@ -10,7 +10,6 @@ from uuid import uuid4
 
 from authx import AuthX
 from sqlalchemy import Column, DateTime, MetaData, String, Table, delete, select
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from src.runtime import get_default_runtime
@@ -179,12 +178,10 @@ async def _store_revoked_jti(engine: AsyncEngine, jti: str, expires_at: datetime
             delete(_revoked_token_jtis).where(_revoked_token_jtis.c.expires_at <= _utc_now())
         )
         await conn.execute(
-            sqlite_insert(_revoked_token_jtis)
-            .values(jti=jti, expires_at=expires_at)
-            .on_conflict_do_update(
-                index_elements=[_revoked_token_jtis.c.jti],
-                set_={"expires_at": expires_at},
-            )
+            delete(_revoked_token_jtis).where(_revoked_token_jtis.c.jti == jti)
+        )
+        await conn.execute(
+            _revoked_token_jtis.insert().values(jti=jti, expires_at=expires_at)
         )
 
 
