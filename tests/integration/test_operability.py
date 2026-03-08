@@ -139,30 +139,25 @@ async def test_rate_limiter_denies_when_redis_fails_open(
     caplog: pytest.LogCaptureFixture,
 ):
     runtime = _get_runtime(client)
-    transport = getattr(client, "_transport", None)
-    app = getattr(transport, "app", None)
-    assert app is not None
     caplog.set_level(logging.WARNING, logger="aranes.operability")
 
     class _BrokenRedis:
-        async def incr(self, key: str) -> int:
-            raise RuntimeError("redis offline")
+        async def script_load(self, script: str) -> str:
+            return "script-hash"
 
-        async def expire(self, key: str, ttl_seconds: int) -> None:
-            return None
+        async def evalsha(self, script_hash: str, num_keys: int, *args):
+            del script_hash, num_keys, args
+            raise RuntimeError("redis offline")
 
         async def aclose(self) -> None:
             return None
 
-    limiter_cache_service = app.state.redis_rate_limiter.cache_service
     original_rate_limit_enabled = runtime.config.RATE_LIMIT_ENABLED
     original_runtime_enabled = runtime.cache_service.enabled
-    original_enabled = limiter_cache_service.enabled
-    original_client = limiter_cache_service.client
+    original_client = runtime.cache_service.client
     runtime.config.RATE_LIMIT_ENABLED = True
-    limiter_cache_service.enabled = True
-    limiter_cache_service.client = _BrokenRedis()
     runtime.cache_service.enabled = True
+    runtime.cache_service.client = _BrokenRedis()
 
     try:
         response = await client.post(
@@ -173,8 +168,7 @@ async def test_rate_limiter_denies_when_redis_fails_open(
     finally:
         runtime.config.RATE_LIMIT_ENABLED = original_rate_limit_enabled
         runtime.cache_service.enabled = original_runtime_enabled
-        limiter_cache_service.enabled = original_enabled
-        limiter_cache_service.client = original_client
+        runtime.cache_service.client = original_client
 
     assert response.status_code == 429, response.text
     assert response.headers.get("X-Request-ID") == "redis-down-test"
@@ -187,29 +181,24 @@ async def test_signup_is_rate_limited_when_redis_fails_open(
     client: httpx.AsyncClient,
 ):
     runtime = _get_runtime(client)
-    transport = getattr(client, "_transport", None)
-    app = getattr(transport, "app", None)
-    assert app is not None
 
     class _BrokenRedis:
-        async def incr(self, key: str) -> int:
-            raise RuntimeError("redis offline")
+        async def script_load(self, script: str) -> str:
+            return "script-hash"
 
-        async def expire(self, key: str, ttl_seconds: int) -> None:
-            return None
+        async def evalsha(self, script_hash: str, num_keys: int, *args):
+            del script_hash, num_keys, args
+            raise RuntimeError("redis offline")
 
         async def aclose(self) -> None:
             return None
 
-    limiter_cache_service = app.state.redis_rate_limiter.cache_service
     original_rate_limit_enabled = runtime.config.RATE_LIMIT_ENABLED
     original_runtime_enabled = runtime.cache_service.enabled
-    original_enabled = limiter_cache_service.enabled
-    original_client = limiter_cache_service.client
+    original_client = runtime.cache_service.client
     runtime.config.RATE_LIMIT_ENABLED = True
-    limiter_cache_service.enabled = True
-    limiter_cache_service.client = _BrokenRedis()
     runtime.cache_service.enabled = True
+    runtime.cache_service.client = _BrokenRedis()
 
     try:
         response = await client.post(
@@ -220,12 +209,22 @@ async def test_signup_is_rate_limited_when_redis_fails_open(
     finally:
         runtime.config.RATE_LIMIT_ENABLED = original_rate_limit_enabled
         runtime.cache_service.enabled = original_runtime_enabled
-        limiter_cache_service.enabled = original_enabled
-        limiter_cache_service.client = original_client
+        runtime.cache_service.client = original_client
 
     assert response.status_code == 429, response.text
     assert response.headers.get("X-Request-ID") == "signup-redis-down-test"
     assert response.json() == {"detail": "Rate limit exceeded"}
+
+
+@pytest.mark.asyncio
+async def test_metrics_endpoint_exposes_http_metrics(unauth_client: httpx.AsyncClient):
+    warmup = await unauth_client.get("/health")
+    assert warmup.status_code == 200, warmup.text
+
+    response = await unauth_client.get("/metrics")
+
+    assert response.status_code == 200, response.text
+    assert "http_request_duration_seconds" in response.text
 
 
 @pytest.mark.asyncio

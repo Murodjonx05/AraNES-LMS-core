@@ -43,13 +43,23 @@ async def _create_revocation_engine():
 
 def test_hash_and_verify_password_roundtrip():
     hashed = service.hash_password("StrongPass123")
-    assert hashed.startswith("pbkdf2_sha256$")
+    assert hashed.startswith("$argon2")
     assert service.verify_password("StrongPass123", hashed) is True
     assert service.verify_password("WrongPass123", hashed) is False
 
 
 def test_verify_password_handles_malformed_hash():
     assert service.verify_password("secret", "broken") is False
+
+
+def test_verify_password_accepts_legacy_pbkdf2_hash():
+    iterations = service._get_pbkdf2_iterations()
+    salt = "testsalt"
+    digest = service._pbkdf2_hex_digest("legacy-secret", salt, iterations)
+    legacy_hash = f"{service.PBKDF2_SCHEME_NAME}${iterations}${salt}${digest}"
+
+    assert service.verify_password("legacy-secret", legacy_hash) is True
+    assert service.verify_password("wrong-secret", legacy_hash) is False
 
 
 @pytest.mark.asyncio

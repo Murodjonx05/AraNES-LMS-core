@@ -3,12 +3,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
-import secrets
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from uuid import uuid4
 
 from authx import AuthX
+from pwdlib import PasswordHash
+from pwdlib.hashers.argon2 import Argon2Hasher
 from sqlalchemy import Column, DateTime, MetaData, String, Table, delete, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -20,6 +21,12 @@ PBKDF2_SCHEME_NAME = "pbkdf2_sha256"
 PBKDF2_ITERATIONS = 100_000
 PBKDF2_ITERATIONS_ENV = "PBKDF2_ITERATIONS"
 _PBKDF2_TEST_OVERRIDE_ENV = "PYTEST_CURRENT_TEST"
+_ARGON2_TIME_COST_ENV = "ARGON2_TIME_COST"
+_ARGON2_MEMORY_COST_ENV = "ARGON2_MEMORY_COST"
+_ARGON2_PARALLELISM_ENV = "ARGON2_PARALLELISM"
+_TEST_ARGON2_TIME_COST = 1
+_TEST_ARGON2_MEMORY_COST = 8 * 1024
+_TEST_ARGON2_PARALLELISM = 1
 FALLBACK_RAW_TOKEN_TTL = timedelta(days=30)
 _TOKEN_REVOCATION_CACHE_TTL_SECONDS_ENV = "TOKEN_REVOCATION_CACHE_TTL_SECONDS"
 _TOKEN_REVOCATION_CACHE_MAX_ENTRIES = 4096
@@ -39,6 +46,31 @@ _revoked_token_jtis = Table(
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+@lru_cache(maxsize=1)
+def _get_password_hasher() -> PasswordHash:
+    if os.getenv(_PBKDF2_TEST_OVERRIDE_ENV):
+        return PasswordHash(
+            (
+                Argon2Hasher(
+                    time_cost=_get_int_env(_ARGON2_TIME_COST_ENV, _TEST_ARGON2_TIME_COST),
+                    memory_cost=_get_int_env(_ARGON2_MEMORY_COST_ENV, _TEST_ARGON2_MEMORY_COST),
+                    parallelism=_get_int_env(_ARGON2_PARALLELISM_ENV, _TEST_ARGON2_PARALLELISM),
+                ),
+            )
+        )
+    return PasswordHash.recommended()
+
+
+def _get_int_env(name: str, default: int) -> int:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return default
+    try:
+        return int(raw_value)
+    except ValueError:
+        return default
 
 
 @lru_cache(maxsize=1)
@@ -389,13 +421,20 @@ def _pbkdf2_hex_digest(password: str, salt: str, iterations: int) -> str:
 
 
 def hash_password(password: str) -> str:
-    iterations = _get_pbkdf2_iterations()
-    salt = secrets.token_hex(16)
-    digest = _pbkdf2_hex_digest(password, salt, iterations)
-    return f"{PBKDF2_SCHEME_NAME}${iterations}${salt}${digest}"
+    return _get_password_hasher().hash(password)
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
+    if stored_hash.startswith(f"{PBKDF2_SCHEME_NAME}$"):
+        return _verify_legacy_pbkdf2_password(password, stored_hash)
+
+    try:
+        return _get_password_hasher().verify(password, stored_hash)
+    except Exception:
+        return False
+
+
+def _verify_legacy_pbkdf2_password(password: str, stored_hash: str) -> bool:
     try:
         scheme_name, iteration_count_raw, salt, expected_digest = stored_hash.split("$", 3)
         if scheme_name != PBKDF2_SCHEME_NAME:

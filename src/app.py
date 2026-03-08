@@ -1,6 +1,4 @@
 import authx.exceptions as authx_exceptions
-import json
-import logging
 import time
 from uuid import uuid4
 
@@ -9,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
+from prometheus_client import CollectorRegistry
+from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import text
 
 from src.api import all_routes
@@ -16,23 +16,14 @@ from src.auth.dependencies import require_access_token_payload
 from src.runtime import RuntimeContext, get_default_runtime
 from src.startup import lifespan
 from src.utils.inprocess_http import attach_inprocess_http
-from src.utils.profiler import emit_request_profile
-from src.utils.rate_limit import InMemoryRateLimiter, RedisRateLimiter
+from src.utils.structured_logging import configure_structured_logging, get_logger
 
-_REQUEST_LOGGER = logging.getLogger("aranes.request")
-_AUDIT_LOGGER = logging.getLogger("aranes.audit")
-_RATE_LIMITED_PATHS = frozenset(
-    {
-        "/api/v1/auth/signup",
-        "/api/v1/auth/login",
-        "/api/v1/auth/reset",
-    }
-)
 _AUDITED_PREFIXES = ("/api/v1/rbac", "/api/v1/i18n")
 _AUDITED_EXACT_PATHS = frozenset({"/api/v1/auth/reset"})
-_OPERABILITY_LOGGER = logging.getLogger("aranes.operability")
-_PROFILER_LOGGER = logging.getLogger("aranes.profiler")
-_SECURITY_LOGGER = logging.getLogger("aranes.security")
+_REQUEST_LOGGER = get_logger("aranes.request")
+_AUDIT_LOGGER = get_logger("aranes.audit")
+_OPERABILITY_LOGGER = get_logger("aranes.operability")
+_SECURITY_LOGGER = get_logger("aranes.security")
 
 
 def _extract_actor_subject(request, runtime: RuntimeContext) -> str | None:
@@ -56,10 +47,8 @@ def _extract_actor_subject(request, runtime: RuntimeContext) -> str | None:
         request.state.actor_subject_resolved = True
         _SECURITY_LOGGER.warning(
             "actor subject extraction failed",
-            extra={
-                "request_id": getattr(request.state, "request_id", None),
-                "error_type": exc.__class__.__name__,
-            },
+            request_id=getattr(request.state, "request_id", None),
+            error_type=exc.__class__.__name__,
         )
         return None
     request.state.actor_subject = getattr(payload, "sub", None)
@@ -79,37 +68,6 @@ def _client_host(request) -> str:
     return str(request.client.host)
 
 
-def _emit_structured_log(logger: logging.Logger, event: str, **payload: object) -> None:
-    logger.info(json.dumps({"event": event, **payload}, ensure_ascii=True, sort_keys=True))
-
-
-def _safe_emit_request_profile(
-    *,
-    method: str,
-    path: str,
-    status_code: int,
-    elapsed_ms: float,
-    request_id: str,
-) -> None:
-    try:
-        emit_request_profile(
-            method=method,
-            path=path,
-            status_code=status_code,
-            elapsed_ms=elapsed_ms,
-        )
-    except Exception:
-        _PROFILER_LOGGER.exception(
-            "request profiler emit failed",
-            extra={
-                "request_id": request_id,
-                "method": method,
-                "path": path,
-                "status_code": status_code,
-            },
-        )
-
-
 def _apply_request_id(response: JSONResponse, request_id: str):
     response.headers["X-Request-ID"] = request_id
     return response
@@ -127,16 +85,8 @@ def _record_request_observation(
     client_host: str,
 ) -> None:
     actor_subject = _extract_actor_subject(request, runtime)
-    _safe_emit_request_profile(
-        method=method,
-        path=path,
-        status_code=status_code,
-        elapsed_ms=elapsed_ms,
-        request_id=request_id,
-    )
     if runtime.config.REQUEST_LOG_ENABLED:
-        _emit_structured_log(
-            _REQUEST_LOGGER,
+        _REQUEST_LOGGER.info(
             "request",
             request_id=request_id,
             method=method,
@@ -147,8 +97,7 @@ def _record_request_observation(
             actor=actor_subject,
         )
     if runtime.config.AUDIT_LOG_ENABLED and _should_audit_request(path, method):
-        _emit_structured_log(
-            _AUDIT_LOGGER,
+        _AUDIT_LOGGER.info(
             "audit",
             request_id=request_id,
             method=method,
@@ -167,8 +116,9 @@ def _build_internal_server_error_response(request: Request, exc: Exception):
     )
     _OPERABILITY_LOGGER.exception(
         "unhandled request exception",
-        extra={"request_id": request_id, "path": request.url.path},
-        exc_info=exc,
+        request_id=request_id,
+        path=request.url.path,
+        error_type=exc.__class__.__name__,
     )
     return _apply_request_id(
         JSONResponse(
@@ -196,10 +146,10 @@ async def _build_redis_health(runtime: RuntimeContext) -> dict[str, object]:
 
 def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
     runtime = runtime or get_default_runtime()
+    configure_structured_logging(runtime.config.LOG_LEVEL)
     app = FastAPI(lifespan=lifespan)
     app.state.runtime = runtime
-    app.state.rate_limiter = InMemoryRateLimiter()
-    app.state.redis_rate_limiter = RedisRateLimiter(runtime.cache_service)
+    app.state.metrics_registry = CollectorRegistry()
 
     def _current_runtime() -> RuntimeContext:
         return getattr(app.state, "runtime", None) or runtime
@@ -225,8 +175,8 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
             )
             _OPERABILITY_LOGGER.exception(
                 "database readiness check failed",
-                extra={"request_id": request_id},
-                exc_info=exc,
+                request_id=request_id,
+                error_type=exc.__class__.__name__,
             )
             return JSONResponse(
                 status_code=503,
@@ -255,50 +205,12 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
         status_code = 500
         client_host = _client_host(request)
 
-        is_rate_limited = False
-        if active_runtime.config.RATE_LIMIT_ENABLED and path in _RATE_LIMITED_PATHS:
-            rate_limit_key = f"{client_host}:{path}"
-            if active_runtime.cache_service.enabled:
-                redis_allowed = await app.state.redis_rate_limiter.allow(
-                    rate_limit_key,
-                    limit=active_runtime.config.RATE_LIMIT_MAX_REQUESTS,
-                    window_seconds=active_runtime.config.RATE_LIMIT_WINDOW_SECONDS,
-                )
-                if redis_allowed is None:
-                    _OPERABILITY_LOGGER.warning(
-                        "rate limiter degraded; denying request",
-                        extra={
-                            "request_id": request_id,
-                            "path": path,
-                            "client_host": client_host,
-                        },
-                    )
-                    is_rate_limited = True
-                else:
-                    is_rate_limited = not redis_allowed
-            else:
-                is_rate_limited = not app.state.rate_limiter.allow(
-                    rate_limit_key,
-                    limit=active_runtime.config.RATE_LIMIT_MAX_REQUESTS,
-                    window_seconds=active_runtime.config.RATE_LIMIT_WINDOW_SECONDS,
-                )
-
-        if is_rate_limited:
-            response = _apply_request_id(
-                JSONResponse(
-                    status_code=429,
-                    content={"detail": "Rate limit exceeded"},
-                ),
-                request_id,
-            )
-            status_code = response.status_code
-        else:
-            try:
-                response = await call_next(request)
-            except Exception as exc:
-                response = _build_internal_server_error_response(request, exc)
-            status_code = response.status_code
-            _apply_request_id(response, request_id)
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            response = _build_internal_server_error_response(request, exc)
+        status_code = response.status_code
+        _apply_request_id(response, request_id)
 
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         _record_request_observation(
@@ -324,6 +236,10 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
         allow_methods=runtime.config.CORS.get("ALLOW_METHODS"),
         allow_headers=runtime.config.CORS.get("ALLOW_HEADERS"),
     )
+    Instrumentator(
+        excluded_handlers=["/metrics"],
+        registry=app.state.metrics_registry,
+    ).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False, tags=["system"])
 
     app.include_router(all_routes)
     attach_inprocess_http(app)

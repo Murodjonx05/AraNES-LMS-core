@@ -1,77 +1,90 @@
-import pytest
+from types import SimpleNamespace
 
-from src.utils.rate_limit import InMemoryRateLimiter
-from src.utils.rate_limit import RedisRateLimiter
+import pytest
+from fastapi import HTTPException
+from starlette.requests import Request
+from starlette.responses import Response
+
+from src.utils import rate_limit
 
 
 class _FakeRedisClient:
     def __init__(self):
-        self.counts: dict[str, int] = {}
-        self.expiry: dict[str, int] = {}
+        self.loaded_scripts: list[str] = []
 
-    async def incr(self, key: str) -> int:
-        value = self.counts.get(key, 0) + 1
-        self.counts[key] = value
-        return value
-
-    async def expire(self, key: str, ttl_seconds: int) -> None:
-        self.expiry[key] = ttl_seconds
+    async def script_load(self, script: str) -> str:
+        self.loaded_scripts.append(script)
+        return "script-hash"
 
 
-class _FakeCacheService:
-    def __init__(self, *, enabled: bool = True, client=None):
-        self.enabled = enabled
-        self.client = client
-        self.marked_unavailable = False
-
-    def mark_unavailable(self) -> None:
-        self.marked_unavailable = True
-
-
-def test_rate_limiter_blocks_after_limit_within_window():
-    clock = iter([0.0, 1.0, 2.0])
-    limiter = InMemoryRateLimiter(time_fn=lambda: next(clock))
-
-    assert limiter.allow("key", limit=2, window_seconds=60) is True
-    assert limiter.allow("key", limit=2, window_seconds=60) is True
-    assert limiter.allow("key", limit=2, window_seconds=60) is False
-
-
-def test_rate_limiter_allows_again_after_window_expires():
-    clock = iter([0.0, 1.0, 65.0])
-    limiter = InMemoryRateLimiter(time_fn=lambda: next(clock))
-
-    assert limiter.allow("key", limit=2, window_seconds=60) is True
-    assert limiter.allow("key", limit=2, window_seconds=60) is True
-    assert limiter.allow("key", limit=2, window_seconds=60) is True
-
-
-def test_rate_limiter_sweeps_stale_keys():
-    clock = iter([0.0, 61.0, 61.0])
-    limiter = InMemoryRateLimiter(time_fn=lambda: next(clock))
-
-    assert limiter.allow("stale", limit=1, window_seconds=60) is True
-    assert "stale" in limiter._buckets
-    assert limiter.allow("fresh", limit=1, window_seconds=60) is True
-
-    assert "stale" not in limiter._buckets
-    assert "fresh" in limiter._buckets
+def _build_runtime(*, redis_enabled: bool, client=None):
+    cache_service = SimpleNamespace(enabled=redis_enabled, client=client, mark_unavailable=lambda: None)
+    config = SimpleNamespace(
+        RATE_LIMIT_ENABLED=True,
+        RATE_LIMIT_MAX_REQUESTS=2,
+        RATE_LIMIT_WINDOW_SECONDS=60,
+    )
+    return SimpleNamespace(config=config, cache_service=cache_service)
 
 
 @pytest.mark.asyncio
-async def test_redis_rate_limiter_blocks_after_limit_within_window():
-    cache_service = _FakeCacheService(client=_FakeRedisClient())
-    limiter = RedisRateLimiter(cache_service=cache_service, time_fn=lambda: 125.0)
+async def test_build_dependency_state_uses_in_memory_when_redis_disabled():
+    runtime = _build_runtime(redis_enabled=False)
 
-    assert await limiter.allow("key", limit=2, window_seconds=60) is True
-    assert await limiter.allow("key", limit=2, window_seconds=60) is True
-    assert await limiter.allow("key", limit=2, window_seconds=60) is False
-    assert cache_service.client.expiry["rate_limit:key:2"] == 55
+    state = await rate_limit._build_dependency_state(runtime)
+
+    assert state.redis_backed is False
 
 
 @pytest.mark.asyncio
-async def test_redis_rate_limiter_returns_none_when_cache_disabled():
-    cache_service = _FakeCacheService(enabled=False, client=_FakeRedisClient())
-    limiter = RedisRateLimiter(cache_service=cache_service)
+async def test_build_dependency_state_initializes_redis_bucket_when_available():
+    client = _FakeRedisClient()
+    runtime = _build_runtime(redis_enabled=True, client=client)
 
-    assert await limiter.allow("key", limit=2, window_seconds=60) is None
+    state = await rate_limit._build_dependency_state(runtime)
+
+    assert state.redis_backed is True
+    assert client.loaded_scripts
+
+
+@pytest.mark.asyncio
+async def test_request_rate_limiter_denies_when_redis_backend_raises(monkeypatch: pytest.MonkeyPatch):
+    marked = {"value": False}
+
+    def _mark_unavailable():
+        marked["value"] = True
+
+    runtime = _build_runtime(redis_enabled=True, client=object())
+    runtime.cache_service.mark_unavailable = _mark_unavailable
+
+    class _BrokenDependency:
+        async def __call__(self, request: Request, response: Response):
+            del request, response
+            raise RuntimeError("redis offline")
+
+    async def _fake_build_dependency_state(_runtime):
+        return rate_limit._RateLimitDependencyState(
+            runtime_signature=rate_limit._runtime_signature(runtime),
+            dependency=_BrokenDependency(),  # type: ignore[arg-type]
+            redis_backed=True,
+        )
+
+    monkeypatch.setattr(rate_limit, "_build_dependency_state", _fake_build_dependency_state)
+
+    request = Request(
+        {
+            "type": "http",
+            "app": SimpleNamespace(state=SimpleNamespace(runtime=runtime)),
+            "method": "POST",
+            "path": "/api/v1/auth/login",
+            "headers": [],
+            "client": ("127.0.0.1", 12345),
+        }
+    )
+    request.state.request_id = "rate-limit-test"
+    response = Response()
+
+    with pytest.raises(HTTPException, match="Rate limit exceeded"):
+        await rate_limit.RequestRateLimiter()(request, response)
+
+    assert marked["value"] is True

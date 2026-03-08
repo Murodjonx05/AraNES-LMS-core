@@ -1,5 +1,6 @@
 import argparse
 import getpass
+import logging
 import os
 from typing import Optional
 
@@ -12,6 +13,13 @@ from src.user_role.defaults import SUPERADMIN_ROLE_ID
 ENV_BOOTSTRAP_ENABLE = "BOOTSTRAP_SUPERUSER_CREATE"
 ENV_BOOTSTRAP_USERNAME = "BOOTSTRAP_SUPERUSER_USERNAME"
 ENV_BOOTSTRAP_PASSWORD = "BOOTSTRAP_SUPERUSER_PASSWORD"
+_LOGGER = logging.getLogger("aranes.super_user")
+
+
+def _ensure_logger_configured() -> None:
+    if logging.getLogger().handlers:
+        return
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
 def _session_scope_ctx(
@@ -68,6 +76,16 @@ def _get_bool_env(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _log_info(message: str) -> None:
+    _ensure_logger_configured()
+    _LOGGER.info(message)
+
+
+def _log_warning(message: str) -> None:
+    _ensure_logger_configured()
+    _LOGGER.warning(message)
+
+
 async def prompt_for_username(
     *,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
@@ -78,10 +96,10 @@ async def prompt_for_username(
     while True:
         username = input("ENTER USERNAME: ").strip()
         if not username:
-            print("Username cannot be empty. Please try again.")
+            _log_warning("Username cannot be empty. Please try again.")
             continue
         if await is_username_taken(username, session_factory=session_factory):
-            print("User already exists. Please try again with a unique username.")
+            _log_warning("User already exists. Please try again with a unique username.")
             continue
         return username
 
@@ -93,11 +111,11 @@ async def prompt_for_password() -> str:
     while True:
         password = getpass.getpass("ENTER PASSWORD: ")
         if not password:
-            print("Password cannot be empty. Try again.")
+            _log_warning("Password cannot be empty. Try again.")
             continue
         confirm_password = getpass.getpass("CONFIRM PASSWORD: ")
         if password != confirm_password:
-            print("Passwords do not match, try again.")
+            _log_warning("Passwords do not match, try again.")
             continue
         return password
 
@@ -120,9 +138,9 @@ async def create_super_user_prompt(
             password=password,
             session_factory=session_factory,
         )
-        print(f"Superuser '{superuser.username}' created.")
+        _log_info(f"Superuser '{superuser.username}' created.")
     else:
-        print("Okay, bye! :)")
+        _log_info("Okay, bye! :)")
 
 
 async def ensure_super_user_once(
@@ -228,7 +246,7 @@ async def ensure_super_user_from_env_if_enabled(
     username = os.getenv(ENV_BOOTSTRAP_USERNAME, "").strip()
     bootstrap_password = os.getenv(ENV_BOOTSTRAP_PASSWORD)
     if not username or not bootstrap_password:
-        print(
+        _log_warning(
             "Superuser bootstrap requested but required credentials are missing. "
             "Set the bootstrap username and password environment variables."
         )
@@ -270,9 +288,9 @@ async def cli_create_super_user(
 
     created = await ensure_super_user_with_credentials(username=username, password=password)
     if created:
-        print(f"Superuser '{username}' created.")
+        _log_info(f"Superuser '{username}' created.")
     else:
-        print("Superuser already exists. No changes made.")
+        _log_info("Superuser already exists. No changes made.")
     return 0
 
 

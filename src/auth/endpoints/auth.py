@@ -24,6 +24,7 @@ from src.auth.service import (
     verify_password,
 )
 from src.database import DbSession
+from src.utils.rate_limit import request_rate_limiter
 from src.user_role.middlewares import get_current_user_with_role
 from src.utils.profiler import profile_function
 
@@ -35,7 +36,10 @@ auth_closed_router = APIRouter()
 
 
 @auth_opened_router.post(
-    "/signup", response_model=AuthTokenResponse, status_code=status.HTTP_201_CREATED
+    "/signup",
+    response_model=AuthTokenResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(request_rate_limiter)],
 )
 async def signup(payload: UserAuthBody, session: DbSession, request: Request):
     runtime = get_runtime_from_request(request)
@@ -55,7 +59,11 @@ async def signup(payload: UserAuthBody, session: DbSession, request: Request):
     return AuthTokenResponse(access_token=access_token)
 
 
-@auth_opened_router.post("/login", response_model=AuthTokenResponse)
+@auth_opened_router.post(
+    "/login",
+    response_model=AuthTokenResponse,
+    dependencies=[Depends(request_rate_limiter)],
+)
 @profile_function()
 async def login(payload: UserAuthBody, session: DbSession, request: Request):
     user = await get_user_for_login(session, payload.username)
@@ -73,7 +81,11 @@ async def login(payload: UserAuthBody, session: DbSession, request: Request):
     return AuthTokenResponse(access_token=access_token)
 
 
-@auth_closed_router.post("/reset", response_model=AuthMessageResponse)
+@auth_closed_router.post(
+    "/reset",
+    response_model=AuthMessageResponse,
+    dependencies=[Depends(request_rate_limiter)],
+)
 @profile_function()
 async def reset_access_token(
     request: Request,

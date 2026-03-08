@@ -4,12 +4,17 @@ httpx
 PyYAML
 pytest
 pydantic
+pydantic-settings
 python-dotenv
 aiosqlite
 asyncio
 sqlalchemy
+structlog
 supervisor
 pytest-asyncio
 fastapi[standard]
 alembic
 redis
+pwdlib[argon2]
+fastapi-limiter
+prometheus-fastapi-instrumentator

@@ -222,19 +222,14 @@ def seeded_db_template(migrated_db_template: Path) -> Path:
 
 @pytest_asyncio.fixture(scope="session")
 async def integration_app(
-    tmp_path_factory: pytest.TempPathFactory,
     seeded_db_template: Path,
 ) -> AsyncIterator[FastAPI]:
     """
     Build FastAPI app once per session to avoid repeated router/middleware setup.
     Per-test fixtures swap app.state.runtime to keep DB isolation.
     """
-    db_dir = tmp_path_factory.mktemp("integration-app-template")
-    db_path = db_dir / "integration.sqlite3"
-    shutil.copy2(seeded_db_template, db_path)
-
     os.environ["JWT_SECRET_KEY"] = TEST_JWT_SECRET
-    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{seeded_db_template}"
     os.environ["CORS_ALLOW_ORIGINS"] = TEST_CORS_ORIGIN
     os.environ["CORS_ALLOW_CREDENTIALS"] = "false"
     os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
@@ -326,58 +321,15 @@ async def client(
 
 @pytest_asyncio.fixture(scope="session")
 async def unauth_client(
-    tmp_path_factory: pytest.TempPathFactory,
-    seeded_db_template: Path,
+    integration_app: FastAPI,
 ) -> AsyncIterator[httpx.AsyncClient]:
     """
     Shared client for unauthenticated/401 integration checks.
-    Uses a copied seeded DB once and skips lifespan; tests using this fixture must not mutate state.
+    Reuses the shared app/runtime because these tests do not mutate persistent state.
     """
-    db_dir = tmp_path_factory.mktemp("integration-unauth-client")
-    db_path = db_dir / "integration.sqlite3"
-    shutil.copy2(seeded_db_template, db_path)
-
-    os.environ["JWT_SECRET_KEY"] = TEST_JWT_SECRET
-    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_path}"
-    os.environ["CORS_ALLOW_ORIGINS"] = TEST_CORS_ORIGIN
-    os.environ["CORS_ALLOW_CREDENTIALS"] = "false"
-    os.environ["PBKDF2_ITERATIONS"] = TEST_PBKDF2_ITERATIONS
-    os.environ["APP_PROFILING_ENABLED"] = TEST_PROFILING_ENABLED
-    os.environ["APP_FUNCTION_PROFILING_ENABLED"] = TEST_FUNCTION_PROFILING_ENABLED
-    if TEST_PROFILE_LOG_DIR:
-        os.environ["APP_PROFILE_LOG_DIR"] = TEST_PROFILE_LOG_DIR
-    os.environ["RATE_LIMIT_ENABLED"] = TEST_RATE_LIMIT_ENABLED
-    os.environ["REDIS_ENABLED"] = TEST_REDIS_ENABLED
-    os.environ["BOOTSTRAP_SUPERUSER_CREATE"] = "false"
-    os.environ["BOOTSTRAP_SUPERUSER_USERNAME"] = "superuser"
-    os.environ["BOOTSTRAP_SUPERUSER_PASSWORD"] = "superuser11"
-
-    from src.runtime import build_runtime, reset_default_runtime
-    from src.config import build_app_config
-    from src.app import create_app
-    from src.utils.inprocess_http import close_inprocess_http
-
-    global _cached_app_config
-    if _cached_app_config is None:
-        _cached_app_config = build_app_config()
-
-    _cached_app_config.DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
-
-    reset_default_runtime()
-    runtime = build_runtime(_cached_app_config)
-    app = create_app(runtime)
-    os.environ["APP_PROFILING_ENABLED"] = TEST_REQUEST_PROFILING_ENABLED
-    os.environ["APP_FUNCTION_PROFILING_ENABLED"] = TEST_FUNCTION_PROFILING_ENABLED
-
-    try:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
-            yield c
-    finally:
-        await runtime.cache_service.close()
-        await close_inprocess_http(app)
-        await runtime.engine.dispose()
-        reset_default_runtime()
+    transport = httpx.ASGITransport(app=integration_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+        yield c
 
 
 @pytest_asyncio.fixture
@@ -391,7 +343,7 @@ async def superuser_tokens(integration_app: FastAPI) -> dict[str, str]:
 
 @pytest_asyncio.fixture
 async def admin_tokens(integration_app: FastAPI) -> dict[str, str]:
-    from src.auth.service import hash_password, issue_access_token
+    from src.auth.service import issue_access_token
     from src.user_role.models import User
 
     runtime = integration_app.state.runtime
@@ -399,38 +351,47 @@ async def admin_tokens(integration_app: FastAPI) -> dict[str, str]:
 
     username = f"admin{uuid.uuid4().hex[:10]}"
     async with runtime.session_factory() as session:
-        session.add(
-            User(
-                username=username,
-                password=hash_password("StrongPass123"),
-                role_id=2,
-                permissions={},
-            )
+        user = User(
+            username=username,
+            # Password is unused in these authorization-only tests.
+            password="fixture-only",
+            role_id=2,
+            permissions={},
         )
+        session.add(user)
+        await session.flush()
         await session.commit()
 
     return {"username": username, "access": issue_access_token(username, security=runtime.security)}
 
 
 @pytest_asyncio.fixture
-async def regular_user_tokens(client: httpx.AsyncClient) -> dict[str, str]:
+async def regular_user_tokens(integration_app: FastAPI) -> dict[str, str]:
+    from src.auth.service import issue_access_token
+    from src.user_role.models import User
+    from src.user_role.defaults import DEFAULT_SIGNUP_ROLE_ID
+
+    runtime = integration_app.state.runtime
+    assert runtime is not None
+
     username = f"student{uuid.uuid4().hex[:10]}"
-    response = await client.post(
-        "/api/v1/auth/signup",
-        json={"username": username, "password": "StrongPass123"},
-    )
-    assert response.status_code == 201, response.text
-    data = response.json()
-    me_response = await client.get(
-        "/api/v1/auth/me",
-        headers={"Authorization": f"Bearer {data['access_token']}"},
-    )
-    assert me_response.status_code == 200, me_response.text
-    me = me_response.json()
+    async with runtime.session_factory() as session:
+        user = User(
+            username=username,
+            # Password is unused in these authorization-only tests.
+            password="fixture-only",
+            role_id=DEFAULT_SIGNUP_ROLE_ID,
+            permissions={},
+        )
+        session.add(user)
+        await session.flush()
+        user_id = user.id
+        await session.commit()
+
     return {
         "username": username,
-        "access": data["access_token"],
-        "user_id": me["id"],
+        "access": issue_access_token(username, security=runtime.security),
+        "user_id": user_id,
     }
 
 
