@@ -2,6 +2,7 @@ venv
 .venv
 .env
 .env.*
+.vscode
 __pycache__/
 *.pyc
 *.pyo

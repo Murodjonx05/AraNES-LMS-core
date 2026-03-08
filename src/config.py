@@ -34,10 +34,6 @@ __all__ = [
 ]
 
 
-def _split_csv(value: str) -> list[str]:
-    return [item.strip() for item in value.split(",") if item.strip()]
-
-
 def _normalize_environment(value: str | None) -> str:
     normalized = (value or "development").strip().lower()
     return normalized or "development"
@@ -45,6 +41,30 @@ def _normalize_environment(value: str | None) -> str:
 
 def _default_log_level(environment: str) -> str:
     return "WARNING" if environment == "production" else "INFO"
+
+
+def _parse_csv(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return tuple(item.strip() for item in value.split(",") if item.strip())
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    return (str(value).strip(),) if str(value).strip() else ()
+
+
+def _validate_int_range(
+    name: str,
+    value: int,
+    *,
+    minimum: int,
+    maximum: int | None = None,
+) -> int:
+    if value < minimum:
+        raise ValueError(f"{name} must be >= {minimum}.")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{name} must be <= {maximum}.")
+    return value
 
 
 def _validate_cors(cors: "CorsConfig") -> None:
@@ -108,36 +128,8 @@ class AppConfig:
     AUTH_CONFIG: AuthXConfig
 
 
-def _require_int_range(
-    name: str,
-    value: int,
-    *,
-    minimum: int,
-    maximum: int | None = None,
-) -> int:
-    if value < minimum:
-        raise RuntimeError(f"{name} must be >= {minimum}.")
-    if maximum is not None and value > maximum:
-        raise RuntimeError(f"{name} must be <= {maximum}.")
-    return value
-
-
-def _require_int_tuple_range(
-    name: str,
-    values: tuple[int, ...],
-    *,
-    minimum: int,
-    maximum: int | None = None,
-) -> tuple[int, ...]:
-    if not values:
-        raise RuntimeError(f"{name} must contain at least one integer value.")
-    for value in values:
-        _require_int_range(name, value, minimum=minimum, maximum=maximum)
-    return values
-
-
 class _AppSettings(BaseSettings):
-    model_config = SettingsConfigDict(extra="ignore", case_sensitive=True)
+    model_config = SettingsConfigDict(extra="ignore", case_sensitive=True, enable_decoding=False)
 
     JWT_SECRET_KEY: str
     ENVIRONMENT: str = "development"
@@ -145,10 +137,10 @@ class _AppSettings(BaseSettings):
     PORT: int = 8000
     DATABASE_URL: str | None = None
 
-    CORS_ALLOW_ORIGINS: str = "http://localhost:3000"
+    CORS_ALLOW_ORIGINS: tuple[str, ...] = ("http://localhost:3000",)
     CORS_ALLOW_CREDENTIALS: bool = False
-    CORS_ALLOW_METHODS: str = "*"
-    CORS_ALLOW_HEADERS: str = "*"
+    CORS_ALLOW_METHODS: tuple[str, ...] = ("*",)
+    CORS_ALLOW_HEADERS: tuple[str, ...] = ("*",)
 
     LOG_LEVEL: str | None = None
     REQUEST_LOG_ENABLED: bool | None = None
@@ -161,7 +153,15 @@ class _AppSettings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_DEFAULT_TTL_SECONDS: int = 3600
     REDIS_HEARTBEAT_ENABLED: bool = True
-    REDIS_HEARTBEAT_SCHEDULE_SECONDS: str = "60,600,1200,3600,14400,28800,43200"
+    REDIS_HEARTBEAT_SCHEDULE_SECONDS: tuple[int, ...] = (
+        60,
+        600,
+        1200,
+        3600,
+        14400,
+        28800,
+        43200,
+    )
 
     @field_validator(
         "JWT_SECRET_KEY",
@@ -170,10 +170,6 @@ class _AppSettings(BaseSettings):
         "HOST",
         "DATABASE_URL",
         "REDIS_URL",
-        "CORS_ALLOW_ORIGINS",
-        "CORS_ALLOW_METHODS",
-        "CORS_ALLOW_HEADERS",
-        "REDIS_HEARTBEAT_SCHEDULE_SECONDS",
         mode="before",
     )
     @classmethod
@@ -182,11 +178,121 @@ class _AppSettings(BaseSettings):
             return value.strip()
         return value
 
+    @field_validator(
+        "CORS_ALLOW_ORIGINS",
+        "CORS_ALLOW_METHODS",
+        "CORS_ALLOW_HEADERS",
+        mode="before",
+    )
+    @classmethod
+    def _parse_csv_fields(cls, value: object) -> tuple[str, ...]:
+        return _parse_csv(value)
+
+    @field_validator("REDIS_HEARTBEAT_SCHEDULE_SECONDS", mode="before")
+    @classmethod
+    def _parse_heartbeat_schedule(cls, value: object) -> tuple[int, ...]:
+        items = _parse_csv(value)
+        if not items:
+            raise ValueError("REDIS_HEARTBEAT_SCHEDULE_SECONDS must contain at least one integer value.")
+        try:
+            return tuple(int(item) for item in items)
+        except ValueError as exc:
+            raise ValueError("REDIS_HEARTBEAT_SCHEDULE_SECONDS must contain integers only.") from exc
+
+    @field_validator("ENVIRONMENT", mode="after")
+    @classmethod
+    def _normalize_environment_field(cls, value: str) -> str:
+        return _normalize_environment(value)
+
+    @field_validator("PORT", mode="after")
+    @classmethod
+    def _validate_port(cls, value: int) -> int:
+        return _validate_int_range("PORT", value, minimum=1, maximum=65535)
+
+    @field_validator("RATE_LIMIT_WINDOW_SECONDS", mode="after")
+    @classmethod
+    def _validate_rate_limit_window(cls, value: int) -> int:
+        return _validate_int_range("RATE_LIMIT_WINDOW_SECONDS", value, minimum=1, maximum=86400)
+
+    @field_validator("RATE_LIMIT_MAX_REQUESTS", mode="after")
+    @classmethod
+    def _validate_rate_limit_max_requests(cls, value: int) -> int:
+        return _validate_int_range("RATE_LIMIT_MAX_REQUESTS", value, minimum=1, maximum=10000)
+
+    @field_validator("REDIS_DEFAULT_TTL_SECONDS", mode="after")
+    @classmethod
+    def _validate_redis_default_ttl(cls, value: int) -> int:
+        return _validate_int_range("REDIS_DEFAULT_TTL_SECONDS", value, minimum=1, maximum=604800)
+
+    @field_validator("REDIS_HEARTBEAT_SCHEDULE_SECONDS", mode="after")
+    @classmethod
+    def _validate_heartbeat_schedule_range(cls, value: tuple[int, ...]) -> tuple[int, ...]:
+        if not value:
+            raise ValueError("REDIS_HEARTBEAT_SCHEDULE_SECONDS must contain at least one integer value.")
+        return tuple(
+            _validate_int_range(
+                "REDIS_HEARTBEAT_SCHEDULE_SECONDS",
+                item,
+                minimum=1,
+                maximum=86400,
+            )
+            for item in value
+        )
+
     @model_validator(mode="after")
-    def _validate_values(self) -> "_AppSettings":
+    def _apply_runtime_defaults(self) -> "_AppSettings":
         if not self.JWT_SECRET_KEY:
             raise RuntimeError("Missing required environment variable: JWT_SECRET_KEY")
+        if self.LOG_LEVEL is None:
+            self.LOG_LEVEL = _default_log_level(self.ENVIRONMENT)
+        else:
+            self.LOG_LEVEL = self.LOG_LEVEL.upper()
+        if self.REQUEST_LOG_ENABLED is None:
+            self.REQUEST_LOG_ENABLED = self.ENVIRONMENT != "production"
+        if self.AUDIT_LOG_ENABLED is None:
+            self.AUDIT_LOG_ENABLED = True
         return self
+
+    def as_app_config(self, *, base_dir: Path, data_dir: Path) -> AppConfig:
+        cors = CorsConfig(
+            ALLOW_ORIGINS=list(self.CORS_ALLOW_ORIGINS),
+            ALLOW_CREDENTIALS=self.CORS_ALLOW_CREDENTIALS,
+            ALLOW_METHODS=list(self.CORS_ALLOW_METHODS),
+            ALLOW_HEADERS=list(self.CORS_ALLOW_HEADERS),
+        )
+        _validate_cors(cors)
+        auth_config = AuthXConfig(
+            JWT_SECRET_KEY=self.JWT_SECRET_KEY,
+            JWT_TOKEN_LOCATION=["headers"],
+        )
+        database_url = self.DATABASE_URL or f"sqlite+aiosqlite:///{data_dir}/db.sqlite3"
+        return AppConfig(
+            BASE_DIR=base_dir,
+            DATA_DIR=data_dir,
+            ENVIRONMENT=self.ENVIRONMENT,
+            HOST=self.HOST,
+            PORT=self.PORT,
+            DATABASE_URL=database_url,
+            CORS=cors.as_dict(),
+            REQUIRED_LANGUAGES=REQUIRED_LANGUAGES,
+            DEFAULT_ROLES=DEFAULT_ROLES,
+            DEFAULT_SIGNUP_ROLE_ID=DEFAULT_SIGNUP_ROLE_ID,
+            DEFAULT_SIGNUP_ROLE_NAME=DEFAULT_SIGNUP_ROLE_NAME,
+            DEFAULT_SIGNUP_ROLE_TITLE_KEY=DEFAULT_SIGNUP_ROLE_TITLE_KEY,
+            JWT_SECRET_KEY=self.JWT_SECRET_KEY,
+            LOG_LEVEL=self.LOG_LEVEL or _default_log_level(self.ENVIRONMENT),
+            REQUEST_LOG_ENABLED=bool(self.REQUEST_LOG_ENABLED),
+            AUDIT_LOG_ENABLED=bool(self.AUDIT_LOG_ENABLED),
+            RATE_LIMIT_ENABLED=self.RATE_LIMIT_ENABLED,
+            RATE_LIMIT_WINDOW_SECONDS=self.RATE_LIMIT_WINDOW_SECONDS,
+            RATE_LIMIT_MAX_REQUESTS=self.RATE_LIMIT_MAX_REQUESTS,
+            REDIS_ENABLED=self.REDIS_ENABLED,
+            REDIS_URL=self.REDIS_URL,
+            REDIS_DEFAULT_TTL_SECONDS=self.REDIS_DEFAULT_TTL_SECONDS,
+            REDIS_HEARTBEAT_ENABLED=self.REDIS_HEARTBEAT_ENABLED,
+            REDIS_HEARTBEAT_SCHEDULE_SECONDS=self.REDIS_HEARTBEAT_SCHEDULE_SECONDS,
+            AUTH_CONFIG=auth_config,
+        )
 
 
 def build_app_config() -> AppConfig:
@@ -204,83 +310,8 @@ def build_app_config() -> AppConfig:
         if missing_jwt:
             raise RuntimeError("Missing required environment variable: JWT_SECRET_KEY") from exc
         raise RuntimeError(str(exc)) from exc
-    cors = CorsConfig(
-        ALLOW_ORIGINS=_split_csv(settings.CORS_ALLOW_ORIGINS),
-        ALLOW_CREDENTIALS=settings.CORS_ALLOW_CREDENTIALS,
-        ALLOW_METHODS=_split_csv(settings.CORS_ALLOW_METHODS),
-        ALLOW_HEADERS=_split_csv(settings.CORS_ALLOW_HEADERS),
-    )
-    _validate_cors(cors)
-    environment = _normalize_environment(settings.ENVIRONMENT)
-    log_level = (settings.LOG_LEVEL or _default_log_level(environment)).upper()
-    request_log_enabled = (
-        settings.REQUEST_LOG_ENABLED
-        if settings.REQUEST_LOG_ENABLED is not None
-        else environment != "production"
-    )
-    audit_log_enabled = (
-        settings.AUDIT_LOG_ENABLED
-        if settings.AUDIT_LOG_ENABLED is not None
-        else True
-    )
-    database_url = settings.DATABASE_URL or f"sqlite+aiosqlite:///{data_dir}/db.sqlite3"
-    port = _require_int_range("PORT", settings.PORT, minimum=1, maximum=65535)
-    rate_limit_window_seconds = _require_int_range(
-        "RATE_LIMIT_WINDOW_SECONDS",
-        settings.RATE_LIMIT_WINDOW_SECONDS,
-        minimum=1,
-        maximum=86400,
-    )
-    rate_limit_max_requests = _require_int_range(
-        "RATE_LIMIT_MAX_REQUESTS",
-        settings.RATE_LIMIT_MAX_REQUESTS,
-        minimum=1,
-        maximum=10000,
-    )
-    redis_default_ttl_seconds = _require_int_range(
-        "REDIS_DEFAULT_TTL_SECONDS",
-        settings.REDIS_DEFAULT_TTL_SECONDS,
-        minimum=1,
-        maximum=604800,
-    )
-    redis_heartbeat_schedule_seconds = _require_int_tuple_range(
-        "REDIS_HEARTBEAT_SCHEDULE_SECONDS",
-        tuple(int(item) for item in _split_csv(settings.REDIS_HEARTBEAT_SCHEDULE_SECONDS)),
-        minimum=1,
-        maximum=86400,
-    )
-    auth_config = AuthXConfig(
-        JWT_SECRET_KEY=settings.JWT_SECRET_KEY,
-        JWT_TOKEN_LOCATION=["headers"],
-    )
 
-    return AppConfig(
-        BASE_DIR=base_dir,
-        DATA_DIR=data_dir,
-        ENVIRONMENT=environment,
-        HOST=settings.HOST,
-        PORT=port,
-        DATABASE_URL=database_url,
-        CORS=cors.as_dict(),
-        REQUIRED_LANGUAGES=REQUIRED_LANGUAGES,
-        DEFAULT_ROLES=DEFAULT_ROLES,
-        DEFAULT_SIGNUP_ROLE_ID=DEFAULT_SIGNUP_ROLE_ID,
-        DEFAULT_SIGNUP_ROLE_NAME=DEFAULT_SIGNUP_ROLE_NAME,
-        DEFAULT_SIGNUP_ROLE_TITLE_KEY=DEFAULT_SIGNUP_ROLE_TITLE_KEY,
-        JWT_SECRET_KEY=settings.JWT_SECRET_KEY,
-        LOG_LEVEL=log_level,
-        REQUEST_LOG_ENABLED=request_log_enabled,
-        AUDIT_LOG_ENABLED=audit_log_enabled,
-        RATE_LIMIT_ENABLED=settings.RATE_LIMIT_ENABLED,
-        RATE_LIMIT_WINDOW_SECONDS=rate_limit_window_seconds,
-        RATE_LIMIT_MAX_REQUESTS=rate_limit_max_requests,
-        REDIS_ENABLED=settings.REDIS_ENABLED,
-        REDIS_URL=settings.REDIS_URL,
-        REDIS_DEFAULT_TTL_SECONDS=redis_default_ttl_seconds,
-        REDIS_HEARTBEAT_ENABLED=settings.REDIS_HEARTBEAT_ENABLED,
-        REDIS_HEARTBEAT_SCHEDULE_SECONDS=redis_heartbeat_schedule_seconds,
-        AUTH_CONFIG=auth_config,
-    )
+    return settings.as_app_config(base_dir=base_dir, data_dir=data_dir)
 
 
 def get_app_config() -> AppConfig:
