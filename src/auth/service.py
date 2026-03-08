@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from authx import AuthX
 from sqlalchemy import Column, DateTime, MetaData, String, Table, delete, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from src.runtime import get_default_runtime
@@ -19,6 +20,7 @@ PBKDF2_ALGORITHM = "sha256"
 PBKDF2_SCHEME_NAME = "pbkdf2_sha256"
 PBKDF2_ITERATIONS = 100_000
 PBKDF2_ITERATIONS_ENV = "PBKDF2_ITERATIONS"
+_PBKDF2_TEST_OVERRIDE_ENV = "PYTEST_CURRENT_TEST"
 FALLBACK_RAW_TOKEN_TTL = timedelta(days=30)
 _TOKEN_REVOCATION_CACHE_TTL_SECONDS_ENV = "TOKEN_REVOCATION_CACHE_TTL_SECONDS"
 _TOKEN_REVOCATION_CACHE_MAX_ENTRIES = 4096
@@ -49,8 +51,9 @@ def _get_pbkdf2_iterations() -> int:
         value = int(raw_value)
     except ValueError:
         return PBKDF2_ITERATIONS
-    # Allow aggressive tuning in test/dev environments.
-    return max(1, value)
+    if os.getenv(_PBKDF2_TEST_OVERRIDE_ENV):
+        return max(1, value)
+    return max(PBKDF2_ITERATIONS, value)
 
 
 def _normalize_expiry(expires_at: datetime) -> datetime:
@@ -175,10 +178,13 @@ async def _store_revoked_jti(engine: AsyncEngine, jti: str, expires_at: datetime
         await conn.execute(
             delete(_revoked_token_jtis).where(_revoked_token_jtis.c.expires_at <= _utc_now())
         )
-        await conn.execute(delete(_revoked_token_jtis).where(_revoked_token_jtis.c.jti == jti))
         await conn.execute(
-            _revoked_token_jtis.insert(),
-            [{"jti": jti, "expires_at": expires_at}],
+            sqlite_insert(_revoked_token_jtis)
+            .values(jti=jti, expires_at=expires_at)
+            .on_conflict_do_update(
+                index_elements=[_revoked_token_jtis.c.jti],
+                set_={"expires_at": expires_at},
+            )
         )
 
 

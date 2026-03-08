@@ -85,6 +85,26 @@ def test_profile_function_can_be_disabled_per_decorator(tmp_path: Path, monkeypa
     assert content["entries"] == {}
 
 
+def test_flush_profile_writes_uses_atomic_replace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    module = _reload_profiler_module(tmp_path, monkeypatch)
+    replaced: dict[str, str] = {}
+    original_replace = module.os.replace
+
+    def _record_replace(src: str, dst: str) -> None:
+        replaced["src"] = src
+        replaced["dst"] = dst
+        original_replace(src, dst)
+
+    monkeypatch.setattr(module.os, "replace", _record_replace)
+
+    module.emit_request_profile(method="GET", path="/atomic", status_code=200, elapsed_ms=1.2)
+
+    assert module.flush_profile_writes()
+    assert Path(replaced["dst"]) == tmp_path / "profile.log.json"
+    assert Path(replaced["src"]) != Path(replaced["dst"])
+    assert json.loads((tmp_path / "profile.log.json").read_text(encoding="utf-8"))["entries"]
+
+
 @pytest.mark.asyncio
 async def test_profile_retains_100_samples_and_keeps_extremes(
     tmp_path: Path,

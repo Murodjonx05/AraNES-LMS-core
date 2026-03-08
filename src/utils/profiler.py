@@ -5,6 +5,7 @@ import functools
 import inspect
 import json
 import os
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -110,9 +111,26 @@ def _flush_profile_writes_sync() -> bool:
         _WRITE_DIRTY = False
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(payload, encoding="utf-8")
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=log_path.parent,
+            prefix=f"{log_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp_file:
+            tmp_file.write(payload)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+            temp_path = tmp_file.name
+        os.replace(temp_path, log_path)
         return True
     except Exception:
+        if "temp_path" in locals():
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
         with _LOCK:
             _WRITE_DIRTY = True
         return False

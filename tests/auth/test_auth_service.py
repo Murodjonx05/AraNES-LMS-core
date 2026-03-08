@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import create_async_engine
 from unittest.mock import patch
 
@@ -143,6 +144,22 @@ def test_pbkdf2_hex_digest_is_deterministic_for_same_inputs():
     assert digest_a != digest_c
 
 
+def test_get_pbkdf2_iterations_clamps_low_values_outside_pytest(monkeypatch: pytest.MonkeyPatch):
+    service._get_pbkdf2_iterations.cache_clear()
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv(service.PBKDF2_ITERATIONS_ENV, "1")
+
+    assert service._get_pbkdf2_iterations() == service.PBKDF2_ITERATIONS
+
+
+def test_get_pbkdf2_iterations_allows_low_values_during_pytest(monkeypatch: pytest.MonkeyPatch):
+    service._get_pbkdf2_iterations.cache_clear()
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/auth/test_auth_service.py::test")
+    monkeypatch.setenv(service.PBKDF2_ITERATIONS_ENV, "1")
+
+    assert service._get_pbkdf2_iterations() == 1
+
+
 def test_revocation_cache_remains_bounded_for_non_expired_entries(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(service, "_TOKEN_REVOCATION_CACHE_MAX_ENTRIES", 4)
     now = service._utc_now()
@@ -187,6 +204,32 @@ async def test_shared_revocation_cache_helpers_roundtrip():
         now=now,
     ) is True
     assert service._build_revocation_cache_key(jti) in cache_service.values
+
+
+@pytest.mark.asyncio
+async def test_store_revoked_jti_upserts_and_cleans_expired_rows():
+    engine = await _create_revocation_engine()
+    expired_at = service._utc_now() - service.timedelta(seconds=5)
+    fresh_expiry = service._utc_now() + service.timedelta(minutes=5)
+    updated_expiry = fresh_expiry + service.timedelta(minutes=5)
+    try:
+        await service._store_revoked_jti(engine, "expired-jti", expired_at)
+        await service._store_revoked_jti(engine, "live-jti", fresh_expiry)
+        await service._store_revoked_jti(engine, "live-jti", updated_expiry)
+
+        async with engine.connect() as conn:
+            count = await conn.scalar(select(func.count()).select_from(service._revoked_token_jtis))
+            expiry = await conn.scalar(
+                select(service._revoked_token_jtis.c.expires_at).where(
+                    service._revoked_token_jtis.c.jti == "live-jti"
+                )
+            )
+
+        assert count == 1
+        assert expiry is not None
+        assert service._normalize_expiry(expiry) == service._normalize_expiry(updated_expiry)
+    finally:
+        await engine.dispose()
 
 
 def test_explicit_security_and_engine_do_not_require_default_runtime():

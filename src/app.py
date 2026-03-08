@@ -23,6 +23,7 @@ _REQUEST_LOGGER = logging.getLogger("aranes.request")
 _AUDIT_LOGGER = logging.getLogger("aranes.audit")
 _RATE_LIMITED_PATHS = frozenset(
     {
+        "/api/v1/auth/signup",
         "/api/v1/auth/login",
         "/api/v1/auth/reset",
     }
