@@ -174,16 +174,17 @@ async def test_create_super_user_uses_auth_schema_validation(monkeypatch, fake_u
 @pytest.mark.asyncio
 async def test_ensure_super_user_from_env_logs_missing_required_variables(
     monkeypatch,
-    caplog: pytest.LogCaptureFixture,
 ):
     monkeypatch.setenv(super_user.ENV_BOOTSTRAP_ENABLE, "true")
     monkeypatch.delenv(super_user.ENV_BOOTSTRAP_USERNAME, raising=False)
     monkeypatch.delenv(super_user.ENV_BOOTSTRAP_PASSWORD, raising=False)
-
-    caplog.set_level("WARNING", logger="aranes.super_user")
+    log_warning = Mock()
+    monkeypatch.setattr(super_user, "_log_warning", log_warning)
 
     created = await super_user.ensure_super_user_from_env_if_enabled()
 
     assert created is False
-    assert any(super_user.ENV_BOOTSTRAP_USERNAME in record.getMessage() for record in caplog.records)
-    assert any(super_user.ENV_BOOTSTRAP_PASSWORD in record.getMessage() for record in caplog.records)
+    log_warning.assert_called_once()
+    message = log_warning.call_args.args[0]
+    assert super_user.ENV_BOOTSTRAP_USERNAME in message
+    assert super_user.ENV_BOOTSTRAP_PASSWORD in message
