@@ -1,29 +1,35 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import structlog
+
+if TYPE_CHECKING:
+    from src.config import AppConfig
 
 _CONFIGURED = False
 
 
-def _resolve_log_level(level: str | int | None) -> int:
-    if isinstance(level, int):
-        return level
-    if isinstance(level, str):
-        resolved = getattr(logging, level.upper(), logging.INFO)
-        return resolved if isinstance(resolved, int) else logging.INFO
+def _coerce_log_level(config_or_level: AppConfig | str | int | None) -> int:
+    if hasattr(config_or_level, "LOG_LEVEL"):
+        config_or_level = getattr(config_or_level, "LOG_LEVEL")
+    if isinstance(config_or_level, int):
+        return config_or_level
+    if isinstance(config_or_level, str):
+        return getattr(logging, config_or_level.upper(), logging.INFO)
     return logging.INFO
 
 
-def configure_structured_logging(level: str | int | None = None) -> None:
+def setup_logging(config_or_level: AppConfig | str | int | None = None) -> None:
     global _CONFIGURED
-    resolved_level = _resolve_log_level(level)
+    log_level = _coerce_log_level(config_or_level)
+    root_logger = logging.getLogger()
 
-    if not logging.getLogger().handlers:
-        logging.basicConfig(level=resolved_level, format="%(message)s")
+    if not root_logger.handlers:
+        logging.basicConfig(level=log_level, format="%(message)s")
     else:
-        logging.getLogger().setLevel(resolved_level)
+        root_logger.setLevel(log_level)
 
     if _CONFIGURED:
         return
@@ -45,6 +51,10 @@ def configure_structured_logging(level: str | int | None = None) -> None:
     _CONFIGURED = True
 
 
+def configure_structured_logging(config_or_level: AppConfig | str | int | None = None) -> None:
+    setup_logging(config_or_level)
+
+
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:
-    configure_structured_logging()
+    setup_logging()
     return structlog.get_logger(name)
