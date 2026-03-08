@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 
 import httpx
 import pytest
@@ -25,6 +26,7 @@ async def test_ready_is_open_and_reports_database_status(unauth_client: httpx.As
     assert payload["database"] == "ok"
     assert payload["database_backend"] == "sqlite"
     assert payload["redis"] == {"enabled": False, "status": "disabled"}
+    assert response.headers.get("X-Request-ID")
 
 
 @pytest.mark.asyncio
@@ -59,9 +61,33 @@ async def test_ready_hides_raw_database_exception_details(
     assert payload["database"] == "error"
     assert payload["detail"] == "Database is unavailable."
     assert "secret-db-path" not in response.text
+    assert response.headers.get("X-Request-ID") == "ready-failure-test"
 
     operability_records = [record for record in caplog.records if record.name == "aranes.operability"]
     assert operability_records
+
+
+@pytest.mark.asyncio
+async def test_unhandled_exceptions_return_request_id_header(client: httpx.AsyncClient):
+    transport = getattr(client, "_transport", None)
+    app = getattr(transport, "app", None)
+    assert app is not None
+
+    path = f"/boom-{uuid.uuid4().hex}"
+
+    async def _boom():
+        raise RuntimeError("boom")
+
+    app.add_api_route(path, _boom, methods=["GET"])
+
+    response = await client.get(path, headers={"X-Request-ID": "boom-test"})
+
+    assert response.status_code == 500, response.text
+    assert response.headers.get("X-Request-ID") == "boom-test"
+    assert response.json() == {
+        "detail": "Internal Server Error",
+        "request_id": "boom-test",
+    }
 
 
 class _ToggleRedis:
@@ -108,6 +134,55 @@ async def test_health_reports_redis_recovery_when_ping_starts_working(
 
 
 @pytest.mark.asyncio
+async def test_rate_limiter_denies_when_redis_fails_open(
+    client: httpx.AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+):
+    runtime = _get_runtime(client)
+    transport = getattr(client, "_transport", None)
+    app = getattr(transport, "app", None)
+    assert app is not None
+    caplog.set_level(logging.WARNING, logger="aranes.operability")
+
+    class _BrokenRedis:
+        async def incr(self, key: str) -> int:
+            raise RuntimeError("redis offline")
+
+        async def expire(self, key: str, ttl_seconds: int) -> None:
+            return None
+
+        async def aclose(self) -> None:
+            return None
+
+    limiter_cache_service = app.state.redis_rate_limiter.cache_service
+    original_rate_limit_enabled = runtime.config.RATE_LIMIT_ENABLED
+    original_runtime_enabled = runtime.cache_service.enabled
+    original_enabled = limiter_cache_service.enabled
+    original_client = limiter_cache_service.client
+    runtime.config.RATE_LIMIT_ENABLED = True
+    limiter_cache_service.enabled = True
+    limiter_cache_service.client = _BrokenRedis()
+    runtime.cache_service.enabled = True
+
+    try:
+        response = await client.post(
+            "/api/v1/auth/login",
+            headers={"X-Request-ID": "redis-down-test"},
+            json={"username": "nobody", "password": "bad-password"},
+        )
+    finally:
+        runtime.config.RATE_LIMIT_ENABLED = original_rate_limit_enabled
+        runtime.cache_service.enabled = original_runtime_enabled
+        limiter_cache_service.enabled = original_enabled
+        limiter_cache_service.client = original_client
+
+    assert response.status_code == 429, response.text
+    assert response.headers.get("X-Request-ID") == "redis-down-test"
+    assert response.json() == {"detail": "Rate limit exceeded"}
+    assert any("rate limiter degraded; denying request" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_mutating_endpoint_emits_request_id_and_audit_log(
     client: httpx.AsyncClient,
     superuser_tokens: dict[str, str],
@@ -127,3 +202,20 @@ async def test_mutating_endpoint_emits_request_id_and_audit_log(
     assert payload["event"] == "audit"
     assert payload["path"] == "/api/v1/rbac/users/reset"
     assert payload["status_code"] == 200
+
+
+@pytest.mark.asyncio
+async def test_invalid_bearer_token_is_logged_for_actor_extraction(
+    client: httpx.AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+):
+    caplog.set_level(logging.WARNING, logger="aranes.security")
+
+    response = await client.post(
+        "/api/v1/rbac/users/reset",
+        headers={"Authorization": "Bearer definitely-not-a-jwt", "X-Request-ID": "bad-token-test"},
+    )
+
+    assert response.status_code == 401, response.text
+    assert response.headers.get("X-Request-ID") == "bad-token-test"
+    assert any("actor subject extraction failed" in record.getMessage() for record in caplog.records)

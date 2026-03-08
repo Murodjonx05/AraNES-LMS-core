@@ -31,20 +31,39 @@ _AUDITED_PREFIXES = ("/api/v1/rbac", "/api/v1/i18n")
 _AUDITED_EXACT_PATHS = frozenset({"/api/v1/auth/reset"})
 _OPERABILITY_LOGGER = logging.getLogger("aranes.operability")
 _PROFILER_LOGGER = logging.getLogger("aranes.profiler")
+_SECURITY_LOGGER = logging.getLogger("aranes.security")
 
 
 def _extract_actor_subject(request, runtime: RuntimeContext) -> str | None:
+    cached = getattr(request.state, "actor_subject", None)
+    if cached is not None:
+        return cached
+    if getattr(request.state, "actor_subject_resolved", False):
+        return None
+
     auth_header = request.headers.get("authorization", "").strip()
     if not auth_header.lower().startswith("bearer "):
+        request.state.actor_subject_resolved = True
         return None
     token = auth_header[7:].strip()
     if not token:
+        request.state.actor_subject_resolved = True
         return None
     try:
         payload = runtime.security._decode_token(token)
-    except Exception:
+    except Exception as exc:
+        request.state.actor_subject_resolved = True
+        _SECURITY_LOGGER.warning(
+            "actor subject extraction failed",
+            extra={
+                "request_id": getattr(request.state, "request_id", None),
+                "error_type": exc.__class__.__name__,
+            },
+        )
         return None
-    return getattr(payload, "sub", None)
+    request.state.actor_subject = getattr(payload, "sub", None)
+    request.state.actor_subject_resolved = True
+    return request.state.actor_subject
 
 
 def _should_audit_request(path: str, method: str) -> bool:
@@ -88,6 +107,78 @@ def _safe_emit_request_profile(
                 "status_code": status_code,
             },
         )
+
+
+def _apply_request_id(response: JSONResponse, request_id: str):
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+def _record_request_observation(
+    *,
+    request,
+    runtime: RuntimeContext,
+    method: str,
+    path: str,
+    status_code: int,
+    elapsed_ms: float,
+    request_id: str,
+    client_host: str,
+) -> None:
+    actor_subject = _extract_actor_subject(request, runtime)
+    _safe_emit_request_profile(
+        method=method,
+        path=path,
+        status_code=status_code,
+        elapsed_ms=elapsed_ms,
+        request_id=request_id,
+    )
+    if runtime.config.REQUEST_LOG_ENABLED:
+        _emit_structured_log(
+            _REQUEST_LOGGER,
+            "request",
+            request_id=request_id,
+            method=method,
+            path=path,
+            status_code=status_code,
+            elapsed_ms=round(elapsed_ms, 3),
+            client_host=client_host,
+            actor=actor_subject,
+        )
+    if runtime.config.AUDIT_LOG_ENABLED and _should_audit_request(path, method):
+        _emit_structured_log(
+            _AUDIT_LOGGER,
+            "audit",
+            request_id=request_id,
+            method=method,
+            path=path,
+            status_code=status_code,
+            client_host=client_host,
+            actor=actor_subject,
+        )
+
+
+def _build_internal_server_error_response(request: Request, exc: Exception):
+    request_id = (
+        getattr(request.state, "request_id", None)
+        or request.headers.get("x-request-id")
+        or uuid4().hex
+    )
+    _OPERABILITY_LOGGER.exception(
+        "unhandled request exception",
+        extra={"request_id": request_id, "path": request.url.path},
+        exc_info=exc,
+    )
+    return _apply_request_id(
+        JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Internal Server Error",
+                "request_id": request_id,
+            },
+        ),
+        request_id,
+    )
 
 
 async def _build_redis_health(runtime: RuntimeContext) -> dict[str, object]:
@@ -166,100 +257,59 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
         is_rate_limited = False
         if active_runtime.config.RATE_LIMIT_ENABLED and path in _RATE_LIMITED_PATHS:
             rate_limit_key = f"{client_host}:{path}"
-            redis_allowed = await app.state.redis_rate_limiter.allow(
-                rate_limit_key,
-                limit=active_runtime.config.RATE_LIMIT_MAX_REQUESTS,
-                window_seconds=active_runtime.config.RATE_LIMIT_WINDOW_SECONDS,
-            )
-            if redis_allowed is None:
+            if active_runtime.cache_service.enabled:
+                redis_allowed = await app.state.redis_rate_limiter.allow(
+                    rate_limit_key,
+                    limit=active_runtime.config.RATE_LIMIT_MAX_REQUESTS,
+                    window_seconds=active_runtime.config.RATE_LIMIT_WINDOW_SECONDS,
+                )
+                if redis_allowed is None:
+                    _OPERABILITY_LOGGER.warning(
+                        "rate limiter degraded; denying request",
+                        extra={
+                            "request_id": request_id,
+                            "path": path,
+                            "client_host": client_host,
+                        },
+                    )
+                    is_rate_limited = True
+                else:
+                    is_rate_limited = not redis_allowed
+            else:
                 is_rate_limited = not app.state.rate_limiter.allow(
                     rate_limit_key,
                     limit=active_runtime.config.RATE_LIMIT_MAX_REQUESTS,
                     window_seconds=active_runtime.config.RATE_LIMIT_WINDOW_SECONDS,
                 )
-            else:
-                is_rate_limited = not redis_allowed
 
         if is_rate_limited:
-            response = JSONResponse(
-                status_code=429,
-                content={"detail": "Rate limit exceeded"},
+            response = _apply_request_id(
+                JSONResponse(
+                    status_code=429,
+                    content={"detail": "Rate limit exceeded"},
+                ),
+                request_id,
             )
-            response.headers["X-Request-ID"] = request_id
             status_code = response.status_code
         else:
             try:
                 response = await call_next(request)
-                status_code = response.status_code
-            except Exception:
-                elapsed_ms = (time.perf_counter() - start) * 1000.0
-                actor_subject = _extract_actor_subject(request, active_runtime)
-                _safe_emit_request_profile(
-                    method=method,
-                    path=path,
-                    status_code=status_code,
-                    elapsed_ms=elapsed_ms,
-                    request_id=request_id,
-                )
-                if active_runtime.config.REQUEST_LOG_ENABLED:
-                    _emit_structured_log(
-                        _REQUEST_LOGGER,
-                        "request",
-                        request_id=request_id,
-                        method=method,
-                        path=path,
-                        status_code=status_code,
-                        elapsed_ms=round(elapsed_ms, 3),
-                        client_host=client_host,
-                        actor=actor_subject,
-                    )
-                if active_runtime.config.AUDIT_LOG_ENABLED and _should_audit_request(path, method):
-                    _emit_structured_log(
-                        _AUDIT_LOGGER,
-                        "audit",
-                        request_id=request_id,
-                        method=method,
-                        path=path,
-                        status_code=status_code,
-                        client_host=client_host,
-                        actor=actor_subject,
-                    )
-                raise
-
-            response.headers["X-Request-ID"] = request_id
+            except Exception as exc:
+                response = _build_internal_server_error_response(request, exc)
+            status_code = response.status_code
+            _apply_request_id(response, request_id)
 
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        actor_subject = _extract_actor_subject(request, active_runtime)
-        _safe_emit_request_profile(
+        _record_request_observation(
+            request=request,
+            runtime=active_runtime,
             method=method,
             path=path,
             status_code=status_code,
             elapsed_ms=elapsed_ms,
             request_id=request_id,
+            client_host=client_host,
         )
-        if active_runtime.config.REQUEST_LOG_ENABLED:
-            _emit_structured_log(
-                _REQUEST_LOGGER,
-                "request",
-                request_id=request_id,
-                method=method,
-                path=path,
-                status_code=status_code,
-                elapsed_ms=round(elapsed_ms, 3),
-                client_host=client_host,
-                actor=actor_subject,
-            )
-        if active_runtime.config.AUDIT_LOG_ENABLED and _should_audit_request(path, method):
-            _emit_structured_log(
-                _AUDIT_LOGGER,
-                "audit",
-                request_id=request_id,
-                method=method,
-                path=path,
-                status_code=status_code,
-                client_host=client_host,
-                actor=actor_subject,
-            )
         return response
 
     trusted_origins = runtime.config.CORS.get("ALLOW_ORIGINS") or []
@@ -280,13 +330,25 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
 
     @app.exception_handler(authx_exceptions.JWTDecodeError)
     async def _jwt_decode_error_handler(request, exc: authx_exceptions.JWTDecodeError):
-        return JSONResponse(
-            status_code=401,
-            content={
-                "message": str(exc) or "Invalid Token",
-                "error_type": exc.__class__.__name__,
-            },
+        request_id = (
+            getattr(request.state, "request_id", None)
+            or request.headers.get("x-request-id")
+            or uuid4().hex
         )
+        return _apply_request_id(
+            JSONResponse(
+                status_code=401,
+                content={
+                    "message": str(exc) or "Invalid Token",
+                    "error_type": exc.__class__.__name__,
+                },
+            ),
+            request_id,
+        )
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception_handler(request: Request, exc: Exception):
+        return _build_internal_server_error_response(request, exc)
 
     def _is_route_protected(route: APIRoute) -> bool:
         dependency_calls = [dep.call for dep in route.dependant.dependencies]

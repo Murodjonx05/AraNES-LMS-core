@@ -120,10 +120,7 @@ async def create_super_user_prompt(
             password=password,
             session_factory=session_factory,
         )
-        masked_password = '*' * len(password)
-        print(
-            f"Superuser '{superuser.username}' created with password: '{masked_password}'"
-        )
+        print(f"Superuser '{superuser.username}' created.")
     else:
         print("Okay, bye! :)")
 
@@ -229,14 +226,15 @@ async def ensure_super_user_from_env_if_enabled(
         return False
 
     username = os.getenv(ENV_BOOTSTRAP_USERNAME, "").strip()
-    password = os.getenv(ENV_BOOTSTRAP_PASSWORD, "")
-    if not username or not password:
+    bootstrap_password = os.getenv(ENV_BOOTSTRAP_PASSWORD)
+    if not username or not bootstrap_password:
         print(
             "Superuser bootstrap requested but credentials are missing. "
             f"Set {ENV_BOOTSTRAP_USERNAME} and {ENV_BOOTSTRAP_PASSWORD}."
         )
         return False
 
+    password = bootstrap_password
     return await ensure_super_user_with_credentials(
         username=username,
         password=password,

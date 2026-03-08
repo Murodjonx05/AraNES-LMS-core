@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from authx import AuthXConfig
 from dotenv import load_dotenv
@@ -56,6 +57,15 @@ def _validate_cors(cors: "CorsConfig") -> None:
         raise RuntimeError("CORS_ALLOW_ORIGINS must contain at least one explicit origin.")
     if "*" in cors.ALLOW_ORIGINS:
         raise RuntimeError("CORS_ALLOW_ORIGINS cannot contain '*'. Use explicit trusted origins.")
+    for origin in cors.ALLOW_ORIGINS:
+        parsed = urlparse(origin)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise RuntimeError(f"CORS_ALLOW_ORIGINS contains an invalid origin: {origin}")
+        if parsed.params or parsed.query or parsed.fragment:
+            raise RuntimeError(f"CORS_ALLOW_ORIGINS must not include query strings or fragments: {origin}")
+        normalized_path = parsed.path.rstrip("/")
+        if normalized_path:
+            raise RuntimeError(f"CORS_ALLOW_ORIGINS must not include a path: {origin}")
 
 
 @dataclass(slots=True)
@@ -117,6 +127,34 @@ def _get_int_tuple_env(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
     return values or default
 
 
+def _require_int_range(
+    name: str,
+    value: int,
+    *,
+    minimum: int,
+    maximum: int | None = None,
+) -> int:
+    if value < minimum:
+        raise RuntimeError(f"{name} must be >= {minimum}.")
+    if maximum is not None and value > maximum:
+        raise RuntimeError(f"{name} must be <= {maximum}.")
+    return value
+
+
+def _require_int_tuple_range(
+    name: str,
+    values: tuple[int, ...],
+    *,
+    minimum: int,
+    maximum: int | None = None,
+) -> tuple[int, ...]:
+    if not values:
+        raise RuntimeError(f"{name} must contain at least one integer value.")
+    for value in values:
+        _require_int_range(name, value, minimum=minimum, maximum=maximum)
+    return values
+
+
 def build_app_config() -> AppConfig:
     base_dir = Path(__file__).resolve().parent.parent
     load_dotenv(base_dir / ".env")
@@ -138,11 +176,40 @@ def build_app_config() -> AppConfig:
         JWT_TOKEN_LOCATION=["headers"],
     )
 
+    port = _require_int_range("PORT", _get_int_env("PORT", 8000), minimum=1, maximum=65535)
+    rate_limit_window_seconds = _require_int_range(
+        "RATE_LIMIT_WINDOW_SECONDS",
+        _get_int_env("RATE_LIMIT_WINDOW_SECONDS", 60),
+        minimum=1,
+        maximum=86400,
+    )
+    rate_limit_max_requests = _require_int_range(
+        "RATE_LIMIT_MAX_REQUESTS",
+        _get_int_env("RATE_LIMIT_MAX_REQUESTS", 20),
+        minimum=1,
+        maximum=10000,
+    )
+    redis_default_ttl_seconds = _require_int_range(
+        "REDIS_DEFAULT_TTL_SECONDS",
+        _get_int_env("REDIS_DEFAULT_TTL_SECONDS", 3600),
+        minimum=1,
+        maximum=604800,
+    )
+    redis_heartbeat_schedule_seconds = _require_int_tuple_range(
+        "REDIS_HEARTBEAT_SCHEDULE_SECONDS",
+        _get_int_tuple_env(
+            "REDIS_HEARTBEAT_SCHEDULE_SECONDS",
+            (60, 600, 1200, 3600, 14400, 28800, 43200),
+        ),
+        minimum=1,
+        maximum=86400,
+    )
+
     return AppConfig(
         BASE_DIR=base_dir,
         DATA_DIR=data_dir,
         HOST=os.getenv("HOST", "0.0.0.0"),
-        PORT=int(os.getenv("PORT", "8000")),
+        PORT=port,
         DATABASE_URL=os.getenv("DATABASE_URL", f"sqlite+aiosqlite:///{data_dir}/db.sqlite3"),
         CORS=cors.as_dict(),
         REQUIRED_LANGUAGES=REQUIRED_LANGUAGES,
@@ -155,16 +222,13 @@ def build_app_config() -> AppConfig:
         REQUEST_LOG_ENABLED=_get_bool_env("REQUEST_LOG_ENABLED", True),
         AUDIT_LOG_ENABLED=_get_bool_env("AUDIT_LOG_ENABLED", True),
         RATE_LIMIT_ENABLED=_get_bool_env("RATE_LIMIT_ENABLED", True),
-        RATE_LIMIT_WINDOW_SECONDS=_get_int_env("RATE_LIMIT_WINDOW_SECONDS", 60),
-        RATE_LIMIT_MAX_REQUESTS=_get_int_env("RATE_LIMIT_MAX_REQUESTS", 20),
+        RATE_LIMIT_WINDOW_SECONDS=rate_limit_window_seconds,
+        RATE_LIMIT_MAX_REQUESTS=rate_limit_max_requests,
         REDIS_ENABLED=_get_bool_env("REDIS_ENABLED", False),
         REDIS_URL=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-        REDIS_DEFAULT_TTL_SECONDS=_get_int_env("REDIS_DEFAULT_TTL_SECONDS", 3600),
+        REDIS_DEFAULT_TTL_SECONDS=redis_default_ttl_seconds,
         REDIS_HEARTBEAT_ENABLED=_get_bool_env("REDIS_HEARTBEAT_ENABLED", True),
-        REDIS_HEARTBEAT_SCHEDULE_SECONDS=_get_int_tuple_env(
-            "REDIS_HEARTBEAT_SCHEDULE_SECONDS",
-            (60, 600, 1200, 3600, 14400, 28800, 43200),
-        ),
+        REDIS_HEARTBEAT_SCHEDULE_SECONDS=redis_heartbeat_schedule_seconds,
         AUTH_CONFIG=auth_config,
     )
 
