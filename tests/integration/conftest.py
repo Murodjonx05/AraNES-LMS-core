@@ -23,9 +23,6 @@ TEST_PBKDF2_ITERATIONS = "1"
 TEST_RATE_LIMIT_ENABLED = "false"
 TEST_REDIS_ENABLED = "false"
 
-# Cached config to avoid rebuilding for each test
-_cached_app_config = None
-
 
 def _get_test_env(name: str, default: str) -> str:
     value = os.getenv(name)
@@ -292,15 +289,8 @@ async def client(
     from src.config import build_app_config
     from src.auth import dependencies as auth_dependencies
 
-    global _cached_app_config
-    if _cached_app_config is None:
-        _cached_app_config = build_app_config()
-
-    # Update DATABASE_URL in cached config
-    _cached_app_config.DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
-
     reset_default_runtime()
-    runtime = build_runtime(_cached_app_config)
+    runtime = build_runtime(build_app_config())
     integration_app.state.runtime = runtime
     monkeypatch.setenv("APP_PROFILING_ENABLED", TEST_REQUEST_PROFILING_ENABLED)
     monkeypatch.setenv("APP_FUNCTION_PROFILING_ENABLED", TEST_FUNCTION_PROFILING_ENABLED)

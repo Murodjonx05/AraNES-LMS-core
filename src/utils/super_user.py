@@ -4,9 +4,11 @@ import logging
 import os
 from typing import Optional
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.auth.schemas import UserAuthBody
 from src.database import session_scope
 from src.user_role.defaults import SUPERADMIN_ROLE_ID
 
@@ -84,6 +86,25 @@ def _log_info(message: str) -> None:
 def _log_warning(message: str) -> None:
     _ensure_logger_configured()
     _LOGGER.warning(message)
+
+
+def _validate_superuser_credentials(*, username: str, password: str) -> tuple[str, str]:
+    normalized_username = username.strip()
+    try:
+        payload = UserAuthBody.model_validate(
+            {
+                "username": normalized_username,
+                "password": password,
+            }
+        )
+    except ValidationError as exc:
+        messages: list[str] = []
+        for error in exc.errors():
+            location = ".".join(str(item) for item in error.get("loc", ())) or "credentials"
+            message = error.get("msg", "Invalid value")
+            messages.append(f"{location}: {message}")
+        raise ValueError("; ".join(messages)) from exc
+    return payload.username, payload.password
 
 
 async def prompt_for_username(
@@ -168,11 +189,7 @@ async def create_super_user(
     from src.auth.service import hash_password
     from src.user_role.models import User
 
-    username = username.strip()
-    if not username:
-        raise ValueError("Username cannot be empty.")
-    if not password:
-        raise ValueError("Password cannot be empty.")
+    username, password = _validate_superuser_credentials(username=username, password=password)
     async with _session_scope_ctx(session_factory=session_factory) as session:
         await _ensure_superadmin_role_exists(session)
         existing_user_id = await session.scalar(select(User.id).where(User.username == username).limit(1))
@@ -203,11 +220,7 @@ async def ensure_super_user_with_credentials(
     from src.auth.service import hash_password
     from src.user_role.models import User
 
-    username = username.strip()
-    if not username:
-        raise ValueError("Username cannot be empty.")
-    if not password:
-        raise ValueError("Password cannot be empty.")
+    username, password = _validate_superuser_credentials(username=username, password=password)
 
     async with _session_scope_ctx(session_factory=session_factory) as session:
         await _ensure_superadmin_role_exists(session)
@@ -215,6 +228,7 @@ async def ensure_super_user_with_credentials(
             select(User.id).where(User.role_id == SUPERADMIN_ROLE_ID).limit(1)
         )
         if superuser_exists is not None:
+            _log_info("Superuser bootstrap skipped because a superuser already exists.")
             return False
 
         existing_username = await session.scalar(select(User.id).where(User.username == username).limit(1))
@@ -246,18 +260,31 @@ async def ensure_super_user_from_env_if_enabled(
     username = os.getenv(ENV_BOOTSTRAP_USERNAME, "").strip()
     bootstrap_password = os.getenv(ENV_BOOTSTRAP_PASSWORD)
     if not username or not bootstrap_password:
+        missing = []
+        if not username:
+            missing.append(ENV_BOOTSTRAP_USERNAME)
+        if not bootstrap_password:
+            missing.append(ENV_BOOTSTRAP_PASSWORD)
         _log_warning(
             "Superuser bootstrap requested but required credentials are missing. "
-            "Set the bootstrap username and password environment variables."
+            f"Missing: {', '.join(missing)}."
         )
         return False
 
     password = bootstrap_password
-    return await ensure_super_user_with_credentials(
-        username=username,
-        password=password,
-        session_factory=session_factory,
-    )
+    try:
+        created = await ensure_super_user_with_credentials(
+            username=username,
+            password=password,
+            session_factory=session_factory,
+        )
+    except ValueError as exc:
+        _log_warning(f"Superuser bootstrap failed validation: {exc}")
+        return False
+
+    if not created:
+        _log_info("Superuser was not created because one already exists.")
+    return created
 
 
 async def cli_create_super_user(

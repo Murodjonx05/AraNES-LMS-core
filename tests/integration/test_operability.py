@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import logging
 import uuid
@@ -155,7 +156,7 @@ async def test_rate_limiter_denies_when_redis_fails_open(
     original_rate_limit_enabled = runtime.config.RATE_LIMIT_ENABLED
     original_runtime_enabled = runtime.cache_service.enabled
     original_client = runtime.cache_service.client
-    runtime.config.RATE_LIMIT_ENABLED = True
+    runtime.config = replace(runtime.config, RATE_LIMIT_ENABLED=True)
     runtime.cache_service.enabled = True
     runtime.cache_service.client = _BrokenRedis()
 
@@ -166,7 +167,7 @@ async def test_rate_limiter_denies_when_redis_fails_open(
             json={"username": "nobody", "password": "bad-password"},
         )
     finally:
-        runtime.config.RATE_LIMIT_ENABLED = original_rate_limit_enabled
+        runtime.config = replace(runtime.config, RATE_LIMIT_ENABLED=original_rate_limit_enabled)
         runtime.cache_service.enabled = original_runtime_enabled
         runtime.cache_service.client = original_client
 
@@ -196,7 +197,7 @@ async def test_signup_is_rate_limited_when_redis_fails_open(
     original_rate_limit_enabled = runtime.config.RATE_LIMIT_ENABLED
     original_runtime_enabled = runtime.cache_service.enabled
     original_client = runtime.cache_service.client
-    runtime.config.RATE_LIMIT_ENABLED = True
+    runtime.config = replace(runtime.config, RATE_LIMIT_ENABLED=True)
     runtime.cache_service.enabled = True
     runtime.cache_service.client = _BrokenRedis()
 
@@ -207,7 +208,7 @@ async def test_signup_is_rate_limited_when_redis_fails_open(
             json={"username": "signup-rate-test", "password": "StrongPass123"},
         )
     finally:
-        runtime.config.RATE_LIMIT_ENABLED = original_rate_limit_enabled
+        runtime.config = replace(runtime.config, RATE_LIMIT_ENABLED=original_rate_limit_enabled)
         runtime.cache_service.enabled = original_runtime_enabled
         runtime.cache_service.client = original_client
 

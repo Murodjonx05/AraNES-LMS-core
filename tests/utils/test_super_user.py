@@ -157,3 +157,33 @@ async def test_create_super_user_requires_superadmin_role(monkeypatch, fake_user
 
     with pytest.raises(RuntimeError, match="SuperAdmin role does not exist"):
         await super_user.create_super_user(username="admin", password="secret123")
+
+
+@pytest.mark.asyncio
+async def test_create_super_user_uses_auth_schema_validation(monkeypatch, fake_user_model):
+    _ = fake_user_model
+
+    fake_auth_service_module = types.ModuleType("src.auth.service")
+    fake_auth_service_module.hash_password = lambda value: f"hashed:{value}"
+    monkeypatch.setitem(sys.modules, "src.auth.service", fake_auth_service_module)
+
+    with pytest.raises(ValueError, match="username: String should have at least 5 characters"):
+        await super_user.create_super_user(username="adm", password="secret123")
+
+
+@pytest.mark.asyncio
+async def test_ensure_super_user_from_env_logs_missing_required_variables(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    monkeypatch.setenv(super_user.ENV_BOOTSTRAP_ENABLE, "true")
+    monkeypatch.delenv(super_user.ENV_BOOTSTRAP_USERNAME, raising=False)
+    monkeypatch.delenv(super_user.ENV_BOOTSTRAP_PASSWORD, raising=False)
+
+    caplog.set_level("WARNING", logger="aranes.super_user")
+
+    created = await super_user.ensure_super_user_from_env_if_enabled()
+
+    assert created is False
+    assert any(super_user.ENV_BOOTSTRAP_USERNAME in record.getMessage() for record in caplog.records)
+    assert any(super_user.ENV_BOOTSTRAP_PASSWORD in record.getMessage() for record in caplog.records)
