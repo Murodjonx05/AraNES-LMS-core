@@ -55,5 +55,7 @@ def test_build_jwt_decode_error_response_emits_security_warning_once(capsys: pyt
     build_jwt_decode_error_response(request, ValueError("bad token"))  # type: ignore[arg-type]
     build_jwt_decode_error_response(request, ValueError("bad token"))  # type: ignore[arg-type]
 
-    stdout = capsys.readouterr().out
-    assert stdout.count("actor subject extraction failed") == 1
+    captured = capsys.readouterr()
+    # structlog via logging writes JSON to stderr by default (basicConfig)
+    combined = captured.out + captured.err
+    assert combined.count("actor subject extraction failed") == 1

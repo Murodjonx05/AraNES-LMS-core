@@ -98,6 +98,14 @@ def should_audit_request(path: str, method: str) -> bool:
     return path in _AUDITED_EXACT_PATHS or path.startswith(_AUDITED_PREFIXES)
 
 
+def needs_request_observation(runtime: RuntimeContext, method: str, path: str) -> bool:
+    if runtime.config.REQUEST_LOG_ENABLED:
+        return True
+    if not runtime.config.AUDIT_LOG_ENABLED:
+        return False
+    return should_audit_request(path, method)
+
+
 def client_host(request) -> str:
     if request.client is None or not request.client.host:
         return "unknown"

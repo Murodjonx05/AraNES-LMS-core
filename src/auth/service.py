@@ -25,6 +25,7 @@ from src.auth.revocation import (
     _build_local_revocation_cache_key,
     _build_raw_token_revocation_key,
     _build_revocation_cache_key,
+    _cache_revocation_status,
     _extract_jti_and_exp,
     _get_cached_revocation_status,
     _normalize_expiry,
@@ -40,6 +41,17 @@ from src.runtime import get_default_runtime
 from src.utils.cache import RedisCacheService
 
 _TOKEN_REVOCATION_CACHE_MAX_ENTRIES = _REVOCATION_CACHE_LIMIT
+_REVOCATION_EXPIRY_CLEANUP_INTERVAL = timedelta(minutes=1)
+_revocation_cleanup_due_at: dict[int, datetime] = {}
+
+
+def _should_cleanup_expired_revocations(*, engine: AsyncEngine, now: datetime) -> bool:
+    engine_key = id(engine)
+    due_at = _revocation_cleanup_due_at.get(engine_key)
+    if due_at is not None and due_at > now:
+        return False
+    _revocation_cleanup_due_at[engine_key] = now + _REVOCATION_EXPIRY_CLEANUP_INTERVAL
+    return True
 
 
 def _resolve_security_and_engine(
@@ -60,29 +72,15 @@ def _resolve_security_and_engine(
 
 
 async def _store_revoked_jti(engine: AsyncEngine, jti: str, expires_at: datetime) -> None:
+    now = _utc_now()
     expires_at = _normalize_expiry(expires_at)
     async with engine.begin() as conn:
-        await conn.execute(
-            delete(_revoked_token_jtis).where(_revoked_token_jtis.c.expires_at <= _utc_now())
-        )
+        if _should_cleanup_expired_revocations(engine=engine, now=now):
+            await conn.execute(
+                delete(_revoked_token_jtis).where(_revoked_token_jtis.c.expires_at <= now)
+            )
         await conn.execute(delete(_revoked_token_jtis).where(_revoked_token_jtis.c.jti == jti))
         await conn.execute(_revoked_token_jtis.insert().values(jti=jti, expires_at=expires_at))
-
-
-def _cache_revocation_status(*, jti: str, revoked: bool, now: datetime, expires_at: datetime) -> None:
-    from src.auth import revocation as _revocation
-
-    cache_until = expires_at if revoked else min(
-        expires_at,
-        now + timedelta(seconds=_revocation._get_token_revocation_cache_ttl_seconds()),
-    )
-    _token_revocation_cache[jti] = (revoked, cache_until)
-    if len(_token_revocation_cache) > _TOKEN_REVOCATION_CACHE_MAX_ENTRIES:
-        for key, (_, valid_until) in list(_token_revocation_cache.items()):
-            if valid_until <= now:
-                _token_revocation_cache.pop(key, None)
-        while len(_token_revocation_cache) > _TOKEN_REVOCATION_CACHE_MAX_ENTRIES:
-            _token_revocation_cache.pop(next(iter(_token_revocation_cache)))
 
 
 def _resolve_revocation_identity(token: str, *, security: AuthX) -> tuple[str, datetime]:
@@ -112,6 +110,7 @@ async def is_token_revoked(
     if cached is not None:
         cached_revoked, cached_until = cached
         if cached_until > now:
+            _token_revocation_cache.move_to_end(local_cache_key)
             return cached_revoked
         _token_revocation_cache.pop(local_cache_key, None)
 
@@ -242,6 +241,9 @@ __all__ = [
     "_pbkdf2_hex_digest",
     "_resolve_revocation_identity",
     "_resolve_security_and_engine",
+    "_REVOCATION_EXPIRY_CLEANUP_INTERVAL",
+    "_revocation_cleanup_due_at",
+    "_should_cleanup_expired_revocations",
     "_revocation_metadata",
     "_revoked_token_jtis",
     "_set_cached_revocation_status",
