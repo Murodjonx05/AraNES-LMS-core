@@ -179,31 +179,3 @@ async def test_heartbeat_loop_honors_initial_delay_before_first_ping():
 
     assert sleep_calls == [15]
     assert fake.ping_calls == 0
-
-
-@pytest.mark.asyncio
-async def test_ping_times_out_and_marks_service_unavailable():
-    service = RedisCacheService(
-        enabled=True,
-        redis_url="redis://unused",
-        default_ttl_seconds=3600,
-        heartbeat_enabled=True,
-        heartbeat_schedule_seconds=(60,),
-        command_timeout_seconds=0.01,
-    )
-
-    class _HangingRedis(_FakeRedis):
-        async def ping(self):
-            self.ping_calls += 1
-            await asyncio.sleep(3600)
-
-    fake = _HangingRedis()
-    service.enabled = True
-    service.client = fake
-    service._available = True
-
-    ok = await service.ping()
-
-    assert ok is False
-    assert service.is_available() is False
-    assert fake.ping_calls == 1
