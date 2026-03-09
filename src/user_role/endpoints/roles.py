@@ -6,6 +6,7 @@ from src.user_role.crud import (
     create_role as crud_create_role,
     delete_role as crud_delete_role,
     get_role_by_id as crud_get_role_by_id,
+    is_superadmin_role,
     list_roles as crud_list_roles,
     patch_role_permissions as crud_patch_role_permissions,
     reset_role_permissions as crud_reset_role_permissions,
@@ -194,7 +195,8 @@ async def reset_role_permissions(
     """
     roles = await crud_list_roles(session)
     updated_count = await crud_reset_role_permissions(session)
-    for role in roles:
-        await cache_service.invalidate_role(role.id)
-    await cache_service.invalidate_role_list()
+    await cache_service.invalidate_roles(
+        (role.id for role in roles if not is_superadmin_role(role)),
+        include_list=True,
+    )
     return {"updated": updated_count}

@@ -62,6 +62,27 @@ def test_build_app_config_allows_explicit_request_logging_override_in_production
     assert config.REQUEST_LOG_ENABLED is True
 
 
+def test_build_app_config_rejects_unknown_log_level(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("LOG_LEVEL", "VERBOSE")
+
+    with pytest.raises(RuntimeError, match="LOG_LEVEL must be one of"):
+        build_app_config()
+
+
+def test_build_app_config_canonicalizes_log_level_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("LOG_LEVEL", "warn")
+
+    config = build_app_config()
+
+    assert config.LOG_LEVEL == "WARNING"
+
+
 def test_build_app_config_enables_startup_db_bootstrap_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ):

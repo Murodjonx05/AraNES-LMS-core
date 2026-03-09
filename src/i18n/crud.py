@@ -38,8 +38,12 @@ async def upsert_small(
     *,
     key: str,
     translation_patch: TranslationPatch,
+    existing_item: TranslateTitle | None = None,
+    existing_item_loaded: bool = False,
 ) -> TranslateTitle:
-    db_small_translation = await get_small_optional(session, key)
+    db_small_translation = existing_item
+    if not existing_item_loaded:
+        db_small_translation = await get_small_optional(session, key)
     if db_small_translation is None:
         db_small_translation = TranslateTitle(key=key, title=dict(translation_patch))
         session.add(db_small_translation)
@@ -59,8 +63,9 @@ async def register_and_upsert_small(
     key: str,
     translation_patch: TranslationPatch,
 ) -> TranslateTitle:
-    register_small_translate(key, translation_patch)
-    return await upsert_small(session, key=key, translation_patch=translation_patch)
+    item = await upsert_small(session, key=key, translation_patch=translation_patch)
+    register_small_translate(key, dict(item.title or {}))
+    return item
 
 
 async def list_large(session: AsyncSession) -> list[TranslateDesc]:
@@ -97,8 +102,12 @@ async def upsert_large(
     key1: str,
     key2: str,
     translation_patch: TranslationPatch,
+    existing_item: TranslateDesc | None = None,
+    existing_item_loaded: bool = False,
 ) -> TranslateDesc:
-    db_large_translation = await get_large_optional(session, key1=key1, key2=key2)
+    db_large_translation = existing_item
+    if not existing_item_loaded:
+        db_large_translation = await get_large_optional(session, key1=key1, key2=key2)
     if db_large_translation is None:
         db_large_translation = TranslateDesc(
             key1=key1,
@@ -123,10 +132,11 @@ async def register_and_upsert_large(
     key2: str,
     translation_patch: TranslationPatch,
 ) -> TranslateDesc:
-    register_large_translate(key1, key2, translation_patch)
-    return await upsert_large(
+    item = await upsert_large(
         session,
         key1=key1,
         key2=key2,
         translation_patch=translation_patch,
     )
+    register_large_translate(key1, key2, dict(item.description or {}))
+    return item

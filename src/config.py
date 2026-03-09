@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -41,6 +42,18 @@ def _normalize_environment(value: str | None) -> str:
 
 def _default_log_level(environment: str) -> str:
     return "WARNING" if environment == "production" else "INFO"
+
+
+def _normalize_log_level(value: str | None) -> str | None:
+    normalized = (value or "").strip().upper()
+    if not normalized:
+        return None
+    level_names = logging.getLevelNamesMapping()
+    level = level_names.get(normalized)
+    if level is None:
+        valid_values = ", ".join(sorted(level_names))
+        raise ValueError(f"LOG_LEVEL must be one of: {valid_values}.")
+    return str(logging.getLevelName(level))
 
 
 def _parse_csv(value: object) -> tuple[str, ...]:
@@ -245,10 +258,7 @@ class _AppSettings(BaseSettings):
     def _apply_runtime_defaults(self) -> "_AppSettings":
         if not self.JWT_SECRET_KEY:
             raise RuntimeError("Missing required environment variable: JWT_SECRET_KEY")
-        if self.LOG_LEVEL is None:
-            self.LOG_LEVEL = _default_log_level(self.ENVIRONMENT)
-        else:
-            self.LOG_LEVEL = self.LOG_LEVEL.upper()
+        self.LOG_LEVEL = _normalize_log_level(self.LOG_LEVEL) or _default_log_level(self.ENVIRONMENT)
         if self.REQUEST_LOG_ENABLED is None:
             self.REQUEST_LOG_ENABLED = self.ENVIRONMENT != "production"
         if self.AUDIT_LOG_ENABLED is None:

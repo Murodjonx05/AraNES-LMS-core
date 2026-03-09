@@ -29,6 +29,7 @@ class _FakeCache:
     def __init__(self):
         self.values: dict[str, dict] = {}
         self.deleted: list[str] = []
+        self.delete_many_calls: list[list[str]] = []
 
     async def get_json(self, key: str):
         return self.values.get(key)
@@ -39,6 +40,12 @@ class _FakeCache:
     async def delete(self, key: str):
         self.deleted.append(key)
         self.values.pop(key, None)
+
+    async def delete_many(self, keys: list[str]):
+        self.delete_many_calls.append(list(keys))
+        for key in keys:
+            self.deleted.append(key)
+            self.values.pop(key, None)
 
     async def close(self):
         return None
@@ -109,6 +116,20 @@ async def test_i18n_cache_service_wraps_generic_backend():
     assert list_payload == [{"key": "hello", "data": {"en": "Hello"}}]
     assert payload == {"key": "hello", "data": {"en": "Hello"}}
     assert backend.deleted == [build_small_list_cache_key(), "i18n:small:hello"]
+
+
+@pytest.mark.asyncio
+async def test_i18n_cache_service_batches_entry_and_list_invalidation():
+    backend = _FakeCache()
+    service = I18nCacheService(backend=backend)
+
+    await service.invalidate_small_entry_and_list("hello")
+    await service.invalidate_large_entry_and_list("course", "description")
+
+    assert backend.delete_many_calls == [
+        [build_small_cache_key("hello"), build_small_list_cache_key()],
+        [build_large_cache_key("course", "description"), build_large_list_cache_key()],
+    ]
 
 
 @pytest.mark.asyncio
@@ -184,6 +205,9 @@ async def test_i18n_large_write_invalidates_cache(
         },
     )
     assert response.status_code == 200, response.text
+    assert fake_cache.delete_many_calls == [
+        [build_large_cache_key("course-cache", "description"), build_large_list_cache_key()]
+    ]
     assert build_large_cache_key("course-cache", "description") in fake_cache.deleted
     assert build_large_list_cache_key() in fake_cache.deleted
     assert build_small_list_cache_key() not in fake_cache.deleted
@@ -230,6 +254,9 @@ async def test_i18n_small_list_read_populates_cache_and_small_write_invalidates_
         },
     )
     assert response.status_code == 200, response.text
+    assert fake_cache.delete_many_calls == [
+        [build_small_cache_key("role.super_admin.title"), build_small_list_cache_key()]
+    ]
     assert build_small_list_cache_key() in fake_cache.deleted
     assert build_small_cache_key("role.super_admin.title") in fake_cache.deleted
     assert build_large_list_cache_key() not in fake_cache.deleted
@@ -293,6 +320,100 @@ async def test_schema_invalid_i18n_cache_entries_are_deleted_and_fall_back_to_db
 
     assert build_small_cache_key("role.super_admin.title") in fake_cache.deleted
     assert build_small_list_cache_key() in fake_cache.deleted
+
+
+@pytest.mark.asyncio
+async def test_noncanonical_small_list_cache_is_deleted_and_falls_back_to_db(
+    client: httpx.AsyncClient,
+    superuser_tokens: dict[str, str],
+):
+    runtime = _get_runtime(client)
+    fake_cache = _FakeCache()
+    fake_cache.values[build_small_list_cache_key()] = {
+        "items": [
+            {
+                "key": "role.user.title",
+                "data": {"en": "User", "ru": "User", "uz": "User"},
+            },
+            {
+                "key": "role.admin.title",
+                "data": {"en": "Admin", "ru": "Admin", "uz": "Admin"},
+            },
+        ]
+    }
+    runtime.cache_service = fake_cache
+
+    response = await client.get(
+        "/api/v1/i18n/small",
+        headers=_auth_headers(superuser_tokens["access"]),
+    )
+    assert response.status_code == 200, response.text
+
+    keys = [item["key"] for item in response.json()]
+    assert keys == sorted(keys)
+    assert "role.admin.title" in keys
+    assert "role.user.title" in keys
+    assert build_small_list_cache_key() in fake_cache.deleted
+
+
+@pytest.mark.asyncio
+async def test_noncanonical_large_list_cache_is_deleted_and_falls_back_to_db(
+    client: httpx.AsyncClient,
+    superuser_tokens: dict[str, str],
+):
+    runtime = _get_runtime(client)
+    fake_cache = _FakeCache()
+    runtime.cache_service = fake_cache
+
+    first_create = await client.put(
+        "/api/v1/i18n/large",
+        headers=_auth_headers(superuser_tokens["access"]),
+        json={
+            "key1": "course-order",
+            "key2": "b",
+            "data": {"en": "B"},
+        },
+    )
+    assert first_create.status_code == 200, first_create.text
+
+    second_create = await client.put(
+        "/api/v1/i18n/large",
+        headers=_auth_headers(superuser_tokens["access"]),
+        json={
+            "key1": "course-order",
+            "key2": "a",
+            "data": {"en": "A"},
+        },
+    )
+    assert second_create.status_code == 200, second_create.text
+
+    fake_cache.deleted.clear()
+    fake_cache.values[build_large_list_cache_key()] = {
+        "items": [
+            {
+                "key1": "course-order",
+                "key2": "b",
+                "data": {"en": "B"},
+            },
+            {
+                "key1": "course-order",
+                "key2": "a",
+                "data": {"en": "A"},
+            },
+        ]
+    }
+
+    response = await client.get(
+        "/api/v1/i18n/large",
+        headers=_auth_headers(superuser_tokens["access"]),
+    )
+    assert response.status_code == 200, response.text
+
+    keys = [(item["key1"], item["key2"]) for item in response.json()]
+    assert keys == sorted(keys)
+    assert ("course-order", "a") in keys
+    assert ("course-order", "b") in keys
+    assert build_large_list_cache_key() in fake_cache.deleted
 
 
 @pytest.mark.asyncio

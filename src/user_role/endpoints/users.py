@@ -210,7 +210,5 @@ async def reset_user_permissions(
 ):
     users = await crud_list_users(session)
     count = await crud_reset_user_permissions(session)
-    for user in users:
-        await cache_service.invalidate_user(user.id)
-    await cache_service.invalidate_user_list()
+    await cache_service.invalidate_users((user.id for user in users), include_list=True)
     return {"updated": count}

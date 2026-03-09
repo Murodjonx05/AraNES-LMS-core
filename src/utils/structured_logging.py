@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -9,6 +9,31 @@ if TYPE_CHECKING:
     from src.config import AppConfig
 
 _CONFIGURED = False
+_METHOD_TO_LEVEL = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "warn": logging.WARNING,
+    "error": logging.ERROR,
+    "exception": logging.ERROR,
+    "critical": logging.CRITICAL,
+    "fatal": logging.CRITICAL,
+}
+
+
+class _FilteringBoundLogger(structlog.stdlib.BoundLogger):
+    def _proxy_to_logger(
+        self,
+        method_name: str,
+        event: str | None = None,
+        *event_args: str,
+        **event_kw: Any,
+    ) -> Any:
+        level = _METHOD_TO_LEVEL.get(method_name)
+        logger = self._logger
+        if level is not None and (logger.disabled or level < logger.getEffectiveLevel()):
+            return None
+        return super()._proxy_to_logger(method_name, event, *event_args, **event_kw)
 
 
 def _coerce_log_level(config_or_level: AppConfig | str | int | None) -> int:
@@ -44,7 +69,7 @@ def setup_logging(config_or_level: AppConfig | str | int | None = None) -> None:
             structlog.processors.format_exc_info,
             structlog.processors.JSONRenderer(),
         ],
-        wrapper_class=structlog.stdlib.BoundLogger,
+        wrapper_class=_FilteringBoundLogger,
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )

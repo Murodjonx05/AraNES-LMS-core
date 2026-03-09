@@ -36,6 +36,34 @@ async def _build_redis_health(runtime: RuntimeContext) -> dict[str, object]:
     }
 
 
+def _has_operability_runtime_contract(runtime: object | None) -> bool:
+    if runtime is None:
+        return False
+    config = getattr(runtime, "config", None)
+    cache_service = getattr(runtime, "cache_service", None)
+    engine = getattr(runtime, "engine", None)
+    return (
+        config is not None
+        and cache_service is not None
+        and hasattr(engine, "connect")
+    )
+
+
+def _resolve_app_runtime(app: FastAPI, fallback_runtime: RuntimeContext) -> RuntimeContext:
+    app_runtime = getattr(getattr(app, "state", None), "runtime", None)
+    if _has_operability_runtime_contract(app_runtime):
+        return app_runtime
+    return fallback_runtime
+
+
+def _engine_backend_name(engine: object) -> str:
+    engine_url = getattr(engine, "url", None)
+    get_backend_name = getattr(engine_url, "get_backend_name", None)
+    if callable(get_backend_name):
+        return str(get_backend_name())
+    return "unknown"
+
+
 def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
     runtime = runtime or get_default_runtime()
     setup_logging(runtime.config)
@@ -44,7 +72,7 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
     app.state.metrics_registry = CollectorRegistry()
 
     def _current_runtime() -> RuntimeContext:
-        return getattr(app.state, "runtime", None) or runtime
+        return _resolve_app_runtime(app, runtime)
 
     @app.get("/health", tags=["system"])
     async def health():
@@ -82,7 +110,7 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
         return {
             "status": "ready",
             "database": "ok",
-            "database_backend": active_runtime.engine.url.get_backend_name(),
+            "database_backend": _engine_backend_name(active_runtime.engine),
             "redis": redis,
         }
 

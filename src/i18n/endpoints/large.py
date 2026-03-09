@@ -78,7 +78,8 @@ async def upsert_large(
         key1=payload.key1,
         key2=payload.key2,
         translation_patch=payload.data,
+        existing_item=existing_item,
+        existing_item_loaded=True,
     )
-    await cache_service.invalidate_large(payload.key1, payload.key2)
-    await cache_service.invalidate_large_list()
+    await cache_service.invalidate_large_entry_and_list(payload.key1, payload.key2)
     return serialize_large(item)

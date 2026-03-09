@@ -71,6 +71,37 @@ def test_resolve_session_factory_uses_request_runtime_before_default_runtime():
     get_default_runtime_mock.assert_not_called()
 
 
+def test_resolve_session_factory_skips_partial_explicit_runtime_and_uses_request_runtime():
+    request_factory = object()
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(runtime=SimpleNamespace(session_factory=request_factory)))
+    )
+    runtime = SimpleNamespace(security=object())
+
+    with patch("src.database.get_default_runtime") as get_default_runtime_mock:
+        resolved = database._resolve_session_factory(
+            request=request,  # type: ignore[arg-type]
+            runtime=runtime,  # type: ignore[arg-type]
+        )
+
+    assert resolved is request_factory
+    get_default_runtime_mock.assert_not_called()
+
+
+def test_resolve_session_factory_falls_back_to_default_runtime_when_request_runtime_is_partial():
+    default_factory = object()
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(runtime=SimpleNamespace(security=object()))))
+
+    with patch(
+        "src.database.get_default_runtime",
+        return_value=SimpleNamespace(session_factory=default_factory),
+    ) as get_default_runtime_mock:
+        resolved = database._resolve_session_factory(request=request)  # type: ignore[arg-type]
+
+    assert resolved is default_factory
+    get_default_runtime_mock.assert_called_once_with()
+
+
 @pytest.mark.asyncio
 async def test_get_db_session_closes_session_on_success():
     session = _FakeSession()

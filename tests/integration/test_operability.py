@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 import logging
+from types import SimpleNamespace
 import uuid
 
 import httpx
@@ -135,6 +136,33 @@ async def test_health_reports_redis_recovery_when_ping_starts_working(
 
 
 @pytest.mark.asyncio
+async def test_health_and_ready_fall_back_when_app_runtime_is_partial(
+    client: httpx.AsyncClient,
+):
+    transport = getattr(client, "_transport", None)
+    app = getattr(transport, "app", None)
+    assert app is not None
+    original_runtime = app.state.runtime
+    app.state.runtime = SimpleNamespace(security=object())
+    try:
+        health_response = await client.get("/health")
+        ready_response = await client.get("/ready")
+    finally:
+        app.state.runtime = original_runtime
+
+    assert health_response.status_code == 200, health_response.text
+    assert health_response.json()["status"] == "ok"
+    assert health_response.json()["redis"] == {"enabled": False, "status": "disabled"}
+
+    assert ready_response.status_code == 200, ready_response.text
+    ready_payload = ready_response.json()
+    assert ready_payload["status"] == "ready"
+    assert ready_payload["database"] == "ok"
+    assert ready_payload["database_backend"] == "sqlite"
+    assert ready_payload["redis"] == {"enabled": False, "status": "disabled"}
+
+
+@pytest.mark.asyncio
 async def test_rate_limiter_denies_when_redis_fails_open(
     client: httpx.AsyncClient,
     caplog: pytest.LogCaptureFixture,
@@ -248,6 +276,61 @@ async def test_mutating_endpoint_emits_request_id_and_audit_log(
     assert payload["event"] == "audit"
     assert payload["path"] == "/api/v1/rbac/users/reset"
     assert payload["status_code"] == 200
+
+
+@pytest.mark.asyncio
+async def test_audit_log_uses_stable_uid_after_username_rename_and_reuse(
+    client: httpx.AsyncClient,
+    superuser_tokens: dict[str, str],
+    caplog: pytest.LogCaptureFixture,
+):
+    caplog.set_level(logging.INFO, logger="aranes.audit")
+    original_username = f"user{uuid.uuid4().hex[:8]}"
+    renamed_username = f"user{uuid.uuid4().hex[:8]}"
+
+    signup_response = await client.post(
+        "/api/v1/auth/signup",
+        json={"username": original_username, "password": "StrongPass123"},
+    )
+    assert signup_response.status_code == 201, signup_response.text
+    access_token = signup_response.json()["access_token"]
+
+    me_response = await client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert me_response.status_code == 200, me_response.text
+    user_id = me_response.json()["id"]
+
+    admin_headers = {"Authorization": f"Bearer {superuser_tokens['access']}"}
+    rename_response = await client.patch(
+        f"/api/v1/rbac/users/{user_id}",
+        headers=admin_headers,
+        json={"username": renamed_username},
+    )
+    assert rename_response.status_code == 200, rename_response.text
+
+    recreate_response = await client.post(
+        "/api/v1/rbac/users",
+        headers=admin_headers,
+        json={"username": original_username, "password": "StrongPass123", "role_id": 6},
+    )
+    assert recreate_response.status_code == 201, recreate_response.text
+
+    caplog.clear()
+    reset_response = await client.post(
+        "/api/v1/auth/reset",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert reset_response.status_code == 200, reset_response.text
+
+    audit_records = [record for record in caplog.records if record.name == "aranes.audit"]
+    assert audit_records
+    payload = json.loads(audit_records[-1].getMessage())
+    assert payload["path"] == "/api/v1/auth/reset"
+    assert payload["status_code"] == 200
+    assert payload["actor"] == f"uid:{user_id}"
+    assert payload["actor"] != original_username
 
 
 @pytest.mark.asyncio

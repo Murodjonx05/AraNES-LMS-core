@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from authx.exceptions import RevokedTokenError
 from fastapi import Request
 from authx.schema import RequestToken
 
@@ -10,6 +11,7 @@ from src.runtime import RuntimeContext, get_default_runtime
 _ACCESS_TOKEN_PAYLOAD_STATE_KEY = "_access_token_payload"
 _REQUEST_ACCESS_TOKEN_STATE_KEY = "_request_access_token"
 _ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY = "_access_token_required_dependency"
+_ACCESS_TOKEN_REQUIRED_DEPENDENCY_SECURITY_STATE_KEY = "_access_token_required_dependency_security"
 
 
 def get_runtime_from_request(request: Request) -> RuntimeContext:
@@ -26,19 +28,27 @@ def peek_cached_access_token_payload(request: Request) -> Any:
 
 def _get_access_token_required_dependency(request: Request):
     app_state = getattr(request.app, "state", None)
-    if app_state is not None and (
-        cached_dependency := getattr(app_state, _ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY, None)
-    ) is not None:
-        return cached_dependency
-
     security = get_security_from_request(request)
-    dependency = security.token_required(
-        type="access",
-        verify_csrf=False,
-        locations=["headers"],
-    )
+    if app_state is not None:
+        cached_dependency = getattr(app_state, _ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY, None)
+        cached_security = getattr(app_state, _ACCESS_TOKEN_REQUIRED_DEPENDENCY_SECURITY_STATE_KEY, None)
+        if cached_dependency is not None and cached_security is security:
+            return cached_dependency
+
+    async def dependency(inner_request: Request) -> Any:
+        request_token = await get_request_access_token(inner_request)
+        if await security.is_token_in_blocklist(request_token.token):
+            raise RevokedTokenError("Token has been revoked")
+        return security.verify_token(
+            request_token,
+            verify_type=True,
+            verify_fresh=False,
+            verify_csrf=False,
+        )
+
     if app_state is not None:
         setattr(app_state, _ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY, dependency)
+        setattr(app_state, _ACCESS_TOKEN_REQUIRED_DEPENDENCY_SECURITY_STATE_KEY, security)
     return dependency
 
 

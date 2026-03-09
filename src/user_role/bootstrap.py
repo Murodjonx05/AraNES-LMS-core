@@ -19,6 +19,8 @@ RBAC_SERVICE = RBACService(
         for _, role_name, _ in DEFAULT_ROLES
     }
 )
+_DEFAULT_ROLE_IDS = tuple(role_id for role_id, _, _ in DEFAULT_ROLES)
+_DEFAULT_ROLE_NAMES = tuple(role_name for _, role_name, _ in DEFAULT_ROLES)
 
 
 def _resolve_default_role_match(
@@ -66,8 +68,12 @@ async def seed_roles_if_missing(session: AsyncSession, *, commit: bool = True) -
     """
     from src.user_role.models import Role
 
-    # Fetch all roles at once
-    result = await session.execute(select(Role))
+    # Only default-role candidates matter for seeding/drift checks.
+    result = await session.execute(
+        select(Role).where(
+            (Role.id.in_(_DEFAULT_ROLE_IDS)) | (Role.name.in_(_DEFAULT_ROLE_NAMES))
+        )
+    )
     existing_roles = list(result.scalars().all())
 
     # Use both ID and name as lookup keys for existence
@@ -111,6 +117,10 @@ async def seed_roles_if_missing(session: AsyncSession, *, commit: bool = True) -
     if commit and (roles_to_add or roles_to_update or session.dirty):
         await session.commit()
 
-    await RBAC_SERVICE.init_role_permissions_if_missing(session, commit=commit)
+    await RBAC_SERVICE.init_role_permissions_if_missing(
+        session,
+        commit=commit,
+        roles=[*existing_roles, *roles_to_add],
+    )
 
     return created

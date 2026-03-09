@@ -22,6 +22,7 @@ from src.auth.passwords import (
 from src.auth.revocation import (
     FALLBACK_RAW_TOKEN_TTL,
     _TOKEN_REVOCATION_CACHE_MAX_ENTRIES as _REVOCATION_CACHE_LIMIT,
+    _build_local_revocation_cache_key,
     _build_raw_token_revocation_key,
     _build_revocation_cache_key,
     _extract_jti_and_exp,
@@ -104,14 +105,15 @@ async def is_token_revoked(
         cache_service=cache_service,
     )
     token_jti, token_exp = _resolve_revocation_identity(token, security=security)
+    local_cache_key = _build_local_revocation_cache_key(token_jti, security=security, engine=engine)
 
     now = _utc_now()
-    cached = _token_revocation_cache.get(token_jti)
+    cached = _token_revocation_cache.get(local_cache_key)
     if cached is not None:
         cached_revoked, cached_until = cached
         if cached_until > now:
             return cached_revoked
-        _token_revocation_cache.pop(token_jti, None)
+        _token_revocation_cache.pop(local_cache_key, None)
 
     redis_cached = await _get_cached_revocation_status(
         cache_service=cache_service,
@@ -120,7 +122,7 @@ async def is_token_revoked(
     )
     if redis_cached is not None:
         _cache_revocation_status(
-            jti=token_jti,
+            jti=local_cache_key,
             revoked=redis_cached,
             now=now,
             expires_at=token_exp,
@@ -135,7 +137,7 @@ async def is_token_revoked(
         ).first()
 
     if row is None:
-        _cache_revocation_status(jti=token_jti, revoked=False, now=now, expires_at=token_exp)
+        _cache_revocation_status(jti=local_cache_key, revoked=False, now=now, expires_at=token_exp)
         await _set_cached_revocation_status(
             cache_service=cache_service,
             jti=token_jti,
@@ -149,7 +151,7 @@ async def is_token_revoked(
     if expires_at <= now:
         async with engine.begin() as conn:
             await conn.execute(delete(_revoked_token_jtis).where(_revoked_token_jtis.c.jti == token_jti))
-        _cache_revocation_status(jti=token_jti, revoked=False, now=now, expires_at=token_exp)
+        _cache_revocation_status(jti=local_cache_key, revoked=False, now=now, expires_at=token_exp)
         await _set_cached_revocation_status(
             cache_service=cache_service,
             jti=token_jti,
@@ -159,7 +161,7 @@ async def is_token_revoked(
         )
         return False
 
-    _cache_revocation_status(jti=token_jti, revoked=True, now=now, expires_at=expires_at)
+    _cache_revocation_status(jti=local_cache_key, revoked=True, now=now, expires_at=expires_at)
     await _set_cached_revocation_status(
         cache_service=cache_service,
         jti=token_jti,
@@ -183,10 +185,11 @@ async def revoke_token(
         cache_service=cache_service,
     )
     token_jti, expires_at = _resolve_revocation_identity(token, security=security)
+    local_cache_key = _build_local_revocation_cache_key(token_jti, security=security, engine=engine)
 
     await _store_revoked_jti(engine, token_jti, expires_at)
     now = _utc_now()
-    _cache_revocation_status(jti=token_jti, revoked=True, now=now, expires_at=expires_at)
+    _cache_revocation_status(jti=local_cache_key, revoked=True, now=now, expires_at=expires_at)
     await _set_cached_revocation_status(
         cache_service=cache_service,
         jti=token_jti,
@@ -226,6 +229,7 @@ __all__ = [
     "PBKDF2_ITERATIONS_ENV",
     "PBKDF2_SCHEME_NAME",
     "_TOKEN_REVOCATION_CACHE_MAX_ENTRIES",
+    "_build_local_revocation_cache_key",
     "_build_raw_token_revocation_key",
     "_build_revocation_cache_key",
     "_cache_revocation_status",

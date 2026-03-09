@@ -164,8 +164,7 @@ async def test_create_role_rejects_postgres_duplicate_name():
 async def test_delete_role_rejects_role_in_use():
     role = SimpleNamespace(id=7, name="Custom")
     session = SimpleNamespace(
-        get=AsyncMock(return_value=role),
-        scalar=AsyncMock(return_value=2),
+        scalar=AsyncMock(side_effect=[role, 2]),
         delete=AsyncMock(),
         commit=AsyncMock(),
     )
@@ -176,6 +175,30 @@ async def test_delete_role_rejects_role_in_use():
     assert exc.value.user_count == 2
     session.delete.assert_not_awaited()
     session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_role_translates_fk_commit_race_to_role_in_use():
+    role = SimpleNamespace(id=7, name="Custom")
+    session = SimpleNamespace(
+        scalar=AsyncMock(side_effect=[role, 0, 3]),
+        delete=AsyncMock(),
+        commit=AsyncMock(
+            side_effect=IntegrityError(
+                statement="DELETE FROM roles ...",
+                params={},
+                orig=Exception('update or delete on table "roles" violates foreign key constraint "users_role_id_fkey"'),
+            )
+        ),
+        rollback=AsyncMock(),
+    )
+
+    with pytest.raises(RoleInUseError) as exc:
+        await crud.delete_role(session, role_id=7)
+
+    assert exc.value.user_count == 3
+    session.delete.assert_awaited_once_with(role)
+    session.rollback.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -203,6 +226,104 @@ async def test_create_user_admin_rejects_postgres_duplicate_username():
 
     session.add.assert_called_once()
     session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_user_admin_translates_fk_commit_race_to_role_not_found():
+    session = SimpleNamespace(
+        scalar=AsyncMock(return_value=2),
+        add=Mock(),
+        commit=AsyncMock(
+            side_effect=IntegrityError(
+                statement="INSERT INTO users ...",
+                params={},
+                orig=Exception('insert or update on table "users" violates foreign key constraint "users_role_id_fkey"'),
+            )
+        ),
+        rollback=AsyncMock(),
+    )
+
+    with pytest.raises(RoleNotFoundError):
+        await crud.create_user_admin(
+            session,
+            username="admin123",
+            password="StrongPass123",
+            role_id=2,
+        )
+
+    session.add.assert_called_once()
+    session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_user_admin_translates_fk_commit_race_to_role_not_found():
+    user = SimpleNamespace(id=9, username="editor1", role_id=2)
+    session = SimpleNamespace(
+        scalar=AsyncMock(side_effect=[user, 3]),
+        commit=AsyncMock(
+            side_effect=IntegrityError(
+                statement="UPDATE users ...",
+                params={},
+                orig=Exception(
+                    "Cannot add or update a child row: a foreign key constraint fails "
+                    "(`app`.`users`, CONSTRAINT `users_ibfk_1` FOREIGN KEY (`role_id`) REFERENCES `roles` (`id`))"
+                ),
+            )
+        ),
+        rollback=AsyncMock(),
+    )
+
+    with pytest.raises(RoleNotFoundError):
+        await crud.update_user_admin(
+            session,
+            user_id=9,
+            role_id=3,
+        )
+
+    session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_user_by_id_uses_summary_query_without_password_column():
+    user = SimpleNamespace(id=7, username="reader", role_id=2, permissions={})
+    session = SimpleNamespace(scalar=AsyncMock(return_value=user))
+
+    result = await crud.get_user_by_id(session, 7)
+
+    assert result is user
+    statement = session.scalar.await_args.args[0]
+    sql = str(statement)
+    assert "users.id" in sql
+    assert "users.username" in sql
+    assert "users.role_id" in sql
+    assert "users.permissions" in sql
+    assert "users.password" not in sql
+
+
+@pytest.mark.asyncio
+async def test_update_user_admin_checks_role_existence_with_id_only_query():
+    user = SimpleNamespace(id=9, username="editor1", role_id=2)
+    session = SimpleNamespace(
+        scalar=AsyncMock(side_effect=[user, 3]),
+        commit=AsyncMock(),
+    )
+
+    result = await crud.update_user_admin(
+        session,
+        user_id=9,
+        role_id=3,
+    )
+
+    assert result is user
+    assert user.role_id == 3
+    detail_sql = str(session.scalar.await_args_list[0].args[0])
+    role_exists_sql = str(session.scalar.await_args_list[1].args[0])
+    assert "users.password" not in detail_sql
+    assert "SELECT roles.id" in role_exists_sql
+    assert "roles.name" not in role_exists_sql
+    assert "roles.title_key" not in role_exists_sql
+    assert "roles.permissions" not in role_exists_sql
+    session.commit.assert_awaited_once()
 
 
 def test_registered_permission_keys_include_new_rbac_crud_keys():

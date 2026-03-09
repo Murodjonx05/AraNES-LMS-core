@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -15,6 +16,15 @@ _USER_LIST_ADAPTER = TypeAdapter(list[UserResponseSchema])
 
 def _serialize_model_list(items: list[RoleResponseSchema] | list[UserResponseSchema]) -> list[dict[str, Any]]:
     return [item.model_dump() for item in items]
+
+
+def _ids_are_strictly_increasing(items: list[RoleResponseSchema] | list[UserResponseSchema]) -> bool:
+    previous_id: int | None = None
+    for item in items:
+        if previous_id is not None and item.id <= previous_id:
+            return False
+        previous_id = item.id
+    return True
 
 
 def _normalize_role_item(payload: Any, *, expected_role_id: int | None = None) -> dict[str, Any] | None:
@@ -42,6 +52,8 @@ def _normalize_role_list(payload: Any) -> list[dict[str, Any]] | None:
         items = _ROLE_LIST_ADAPTER.validate_python(payload)
     except ValidationError:
         return None
+    if not _ids_are_strictly_increasing(items):
+        return None
     return _serialize_model_list(items)
 
 
@@ -49,6 +61,8 @@ def _normalize_user_list(payload: Any) -> list[dict[str, Any]] | None:
     try:
         items = _USER_LIST_ADAPTER.validate_python(payload)
     except ValidationError:
+        return None
+    if not _ids_are_strictly_increasing(items):
         return None
     return _serialize_model_list(items)
 
@@ -64,6 +78,8 @@ class JsonCacheBackend(Protocol):
     ) -> None: ...
 
     async def delete(self, key: str) -> None: ...
+
+    async def delete_many(self, keys: list[str]) -> None: ...
 
 
 def build_role_cache_key(role_id: int) -> str:
@@ -86,6 +102,17 @@ def build_user_list_cache_key() -> str:
 class RbacCacheService:
     backend: JsonCacheBackend
 
+    async def _delete_keys(self, keys: Iterable[str]) -> None:
+        cache_keys = list(dict.fromkeys(keys))
+        if not cache_keys:
+            return
+        delete_many = getattr(self.backend, "delete_many", None)
+        if callable(delete_many):
+            await delete_many(cache_keys)
+            return
+        for cache_key in cache_keys:
+            await self.backend.delete(cache_key)
+
     async def get_role(self, role_id: int) -> dict[str, Any] | None:
         payload = await self.backend.get_json(build_role_cache_key(role_id))
         if payload is None:
@@ -107,9 +134,23 @@ class RbacCacheService:
     async def invalidate_role(self, role_id: int) -> None:
         await self.backend.delete(build_role_cache_key(role_id))
 
+    async def invalidate_roles(
+        self,
+        role_ids: Iterable[int],
+        *,
+        include_list: bool = False,
+    ) -> None:
+        keys = [build_role_cache_key(role_id) for role_id in role_ids]
+        if include_list:
+            keys.append(build_role_list_cache_key())
+        await self._delete_keys(keys)
+
     async def get_role_list(self) -> list[dict[str, Any]] | None:
         payload = await self.backend.get_json(build_role_list_cache_key())
         if payload is None:
+            return None
+        if not isinstance(payload, dict):
+            await self.invalidate_role_list()
             return None
         items = payload.get("items")
         normalized_items = _normalize_role_list(items)
@@ -149,9 +190,23 @@ class RbacCacheService:
     async def invalidate_user(self, user_id: int) -> None:
         await self.backend.delete(build_user_cache_key(user_id))
 
+    async def invalidate_users(
+        self,
+        user_ids: Iterable[int],
+        *,
+        include_list: bool = False,
+    ) -> None:
+        keys = [build_user_cache_key(user_id) for user_id in user_ids]
+        if include_list:
+            keys.append(build_user_list_cache_key())
+        await self._delete_keys(keys)
+
     async def get_user_list(self) -> list[dict[str, Any]] | None:
         payload = await self.backend.get_json(build_user_list_cache_key())
         if payload is None:
+            return None
+        if not isinstance(payload, dict):
+            await self.invalidate_user_list()
             return None
         items = payload.get("items")
         normalized_items = _normalize_user_list(items)

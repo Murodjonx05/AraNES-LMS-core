@@ -80,6 +80,14 @@ def _token_cache_key(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _build_token_identity_cache_key(token: str, *, security: AuthX) -> str:
+    return f"{id(security)}:{_token_cache_key(token)}"
+
+
+def _build_local_revocation_cache_key(jti: str, *, security: AuthX, engine: AsyncEngine) -> str:
+    return f"{id(security)}:{id(engine)}:{jti}"
+
+
 async def _get_cached_revocation_status(
     *,
     cache_service: RedisCacheService | None,
@@ -133,7 +141,7 @@ async def _set_cached_revocation_status(
 
 def _extract_jti_and_exp(token: str, *, security: AuthX) -> tuple[str, datetime]:
     now = _utc_now()
-    cache_key = _token_cache_key(token)
+    cache_key = _build_token_identity_cache_key(token, security=security)
     cached_identity = _token_identity_cache.get(cache_key)
     if cached_identity is not None:
         token_jti, token_exp = cached_identity

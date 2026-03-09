@@ -122,16 +122,31 @@ class RedisCacheService:
         except Exception:
             self.mark_unavailable()
 
+    async def delete_many(self, cache_keys: list[str]) -> None:
+        if not cache_keys or not self.enabled or self.client is None:
+            return
+        try:
+            await self.client.delete(*cache_keys)
+        except Exception:
+            self.mark_unavailable()
+
     async def start_heartbeat(self) -> None:
+        await self.start_heartbeat_with_delay()
+
+    async def start_heartbeat_with_delay(self, *, initial_delay_seconds: float = 0) -> None:
         if not self.enabled or not self.heartbeat_enabled or self.client is None:
             return
         if self._heartbeat_task is not None and not self._heartbeat_task.done():
             return
-        self._heartbeat_task = asyncio.create_task(self.heartbeat_loop())
+        self._heartbeat_task = asyncio.create_task(
+            self.heartbeat_loop(initial_delay_seconds=initial_delay_seconds)
+        )
 
-    async def heartbeat_loop(self) -> None:
+    async def heartbeat_loop(self, *, initial_delay_seconds: float = 0) -> None:
         schedule = self.heartbeat_schedule_seconds or (43200,)
         failure_count = 0
+        if initial_delay_seconds > 0:
+            await asyncio.sleep(initial_delay_seconds)
         while True:
             ok = await self.ping()
             if ok:
@@ -156,4 +171,9 @@ class RedisCacheService:
                 pass
             self._heartbeat_task = None
         if self.client is not None:
-            await self.client.aclose()
+            client = self.client
+            self.client = None
+            self._available = False
+            await client.aclose()
+        else:
+            self._available = False
