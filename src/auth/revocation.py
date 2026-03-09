@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
 from authx import AuthX
+from authx.schema import RequestToken
 from sqlalchemy import Column, DateTime, MetaData, String, Table, delete, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -141,7 +142,16 @@ def _extract_jti_and_exp(token: str, *, security: AuthX) -> tuple[str, datetime]
         _token_identity_cache.pop(cache_key, None)
 
     try:
-        payload = security._decode_token(token)
+        payload = security.verify_token(
+            RequestToken(
+                token=token,
+                type="access",
+                location="headers",
+            ),
+            verify_type=True,
+            verify_fresh=False,
+            verify_csrf=False,
+        )
         payload_dict = payload.model_dump() if hasattr(payload, "model_dump") else {}
         token_jti = getattr(payload, "jti", None) or payload_dict.get("jti")
         token_exp = getattr(payload, "exp", None) or payload_dict.get("exp")

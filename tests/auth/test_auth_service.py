@@ -16,7 +16,8 @@ def _reset_auth_service_caches():
 
 
 class _InvalidSecurity:
-    def _decode_token(self, token: str):
+    def verify_token(self, token, **kwargs):
+        del token, kwargs
         raise ValueError("invalid token")
 
 
@@ -60,6 +61,12 @@ def test_verify_password_accepts_legacy_pbkdf2_hash():
 
     assert service.verify_password("legacy-secret", legacy_hash) is True
     assert service.verify_password("wrong-secret", legacy_hash) is False
+
+
+def test_verify_password_rejects_legacy_pbkdf2_hash_with_non_positive_iterations():
+    legacy_hash = f"{service.PBKDF2_SCHEME_NAME}$0$testsalt$deadbeef"
+
+    assert service.verify_password("legacy-secret", legacy_hash) is False
 
 
 @pytest.mark.asyncio
@@ -135,8 +142,13 @@ def test_extract_jti_and_exp_accepts_numeric_exp_timestamp():
             return {"jti": self.jti, "exp": self.exp}
 
     class _Security:
-        def _decode_token(self, token: str):
-            assert token == "jwt-token"
+        def verify_token(self, token, **kwargs):
+            assert token.token == "jwt-token"
+            assert token.type == "access"
+            assert token.location == "headers"
+            assert kwargs["verify_type"] is True
+            assert kwargs["verify_fresh"] is False
+            assert kwargs["verify_csrf"] is False
             return _Payload()
 
     token_jti, expires_at = service._extract_jti_and_exp("jwt-token", security=_Security())
@@ -168,6 +180,19 @@ def test_get_pbkdf2_iterations_allows_low_values_during_pytest(monkeypatch: pyte
     monkeypatch.setenv(service.PBKDF2_ITERATIONS_ENV, "1")
 
     assert service._get_pbkdf2_iterations() == 1
+
+
+def test_password_hasher_clamps_weak_argon2_env_values_outside_pytest(monkeypatch: pytest.MonkeyPatch):
+    service._get_password_hasher.cache_clear()
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("ARGON2_TIME_COST", "1")
+    monkeypatch.setenv("ARGON2_MEMORY_COST", "1024")
+    monkeypatch.setenv("ARGON2_PARALLELISM", "0")
+
+    hashed = service.hash_password("StrongPass123")
+
+    assert hashed.startswith("$argon2")
+    assert service.verify_password("StrongPass123", hashed) is True
 
 
 def test_revocation_cache_remains_bounded_for_non_expired_entries(monkeypatch: pytest.MonkeyPatch):

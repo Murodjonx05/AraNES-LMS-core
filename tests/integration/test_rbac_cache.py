@@ -51,15 +51,18 @@ async def test_rbac_cache_service_wraps_generic_backend():
     backend = _FakeCache()
     service = RbacCacheService(backend=backend)
 
-    await service.set_role_list([{"id": 1, "name": "SuperAdmin"}])
-    await service.set_role(1, {"id": 1, "name": "SuperAdmin"})
-    await service.set_user_list([{"id": 1, "username": "superuser"}])
-    await service.set_user(1, {"id": 1, "username": "superuser"})
+    role_payload = {"id": 1, "name": "SuperAdmin", "title_key": "role.super_admin.title", "permissions": {}}
+    user_payload = {"id": 1, "username": "superuser", "role_id": 1, "permissions": {}}
 
-    assert await service.get_role_list() == [{"id": 1, "name": "SuperAdmin"}]
-    assert await service.get_role(1) == {"id": 1, "name": "SuperAdmin"}
-    assert await service.get_user_list() == [{"id": 1, "username": "superuser"}]
-    assert await service.get_user(1) == {"id": 1, "username": "superuser"}
+    await service.set_role_list([role_payload])
+    await service.set_role(1, role_payload)
+    await service.set_user_list([user_payload])
+    await service.set_user(1, user_payload)
+
+    assert await service.get_role_list() == [role_payload]
+    assert await service.get_role(1) == role_payload
+    assert await service.get_user_list() == [user_payload]
+    assert await service.get_user(1) == user_payload
 
 
 @pytest.mark.asyncio
@@ -134,3 +137,26 @@ async def test_rbac_users_list_read_populates_cache_and_user_write_invalidates_o
         build_user_cache_key(regular_user_tokens["user_id"]) in fake_cache.values
         or build_user_cache_key(regular_user_tokens["user_id"]) in fake_cache.deleted
     )
+
+
+@pytest.mark.asyncio
+async def test_schema_invalid_rbac_cache_entries_are_deleted_and_fall_back_to_db(
+    client: httpx.AsyncClient,
+    superuser_tokens: dict[str, str],
+):
+    runtime = _get_runtime(client)
+    fake_cache = _FakeCache()
+    fake_cache.values[build_role_cache_key(1)] = {"id": 2, "name": "Wrong", "title_key": "wrong"}
+    fake_cache.values[build_role_list_cache_key()] = {"items": [{"id": "wrong-type"}]}
+    runtime.cache_service = fake_cache
+
+    item_response = await client.get("/api/v1/rbac/roles/1", headers=_auth_headers(superuser_tokens["access"]))
+    assert item_response.status_code == 200, item_response.text
+    assert item_response.json()["id"] == 1
+
+    list_response = await client.get("/api/v1/rbac/roles", headers=_auth_headers(superuser_tokens["access"]))
+    assert list_response.status_code == 200, list_response.text
+    assert isinstance(list_response.json(), list)
+
+    assert build_role_cache_key(1) in fake_cache.deleted
+    assert build_role_list_cache_key() in fake_cache.deleted

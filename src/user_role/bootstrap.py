@@ -21,7 +21,45 @@ RBAC_SERVICE = RBACService(
 )
 
 
-async def seed_roles_if_missing(session: AsyncSession) -> int:
+def _resolve_default_role_match(
+    *,
+    role_id: int,
+    role_name: str,
+    by_id: dict[int, object],
+    by_name: dict[str, object],
+):
+    existing_by_id = by_id.get(role_id)
+    existing_by_name = by_name.get(role_name)
+
+    if existing_by_id is None and existing_by_name is None:
+        return None
+
+    if (
+        existing_by_id is not None
+        and existing_by_name is not None
+        and existing_by_id is not existing_by_name
+    ):
+        raise RuntimeError(
+            "Default role mapping drift detected. "
+            f"Role id {role_id} maps to '{getattr(existing_by_id, 'name', None)}' "
+            f"while role name '{role_name}' maps to id {getattr(existing_by_name, 'id', None)}'."
+        )
+
+    existing = existing_by_id or existing_by_name
+    if existing is None:
+        return None
+
+    if getattr(existing, "id", None) != role_id or getattr(existing, "name", None) != role_name:
+        raise RuntimeError(
+            "Default role drift detected. "
+            f"Expected role ({role_id}, '{role_name}') but found "
+            f"({getattr(existing, 'id', None)}, '{getattr(existing, 'name', None)}')."
+        )
+
+    return existing
+
+
+async def seed_roles_if_missing(session: AsyncSession, *, commit: bool = True) -> int:
     """
     Seed default roles if they do not already exist.
     Returns the number of roles created.
@@ -30,7 +68,7 @@ async def seed_roles_if_missing(session: AsyncSession) -> int:
 
     # Fetch all roles at once
     result = await session.execute(select(Role))
-    existing_roles = list(result.scalars())
+    existing_roles = list(result.scalars().all())
 
     # Use both ID and name as lookup keys for existence
     by_id = {role.id: role for role in existing_roles}
@@ -41,7 +79,12 @@ async def seed_roles_if_missing(session: AsyncSession) -> int:
     roles_to_add = []
 
     for role_id, role_name, role_title_key in DEFAULT_ROLES:
-        existing = by_id.get(role_id) or by_name.get(role_name)
+        existing = _resolve_default_role_match(
+            role_id=role_id,
+            role_name=role_name,
+            by_id=by_id,
+            by_name=by_name,
+        )
         if existing:
             # Only update title_key if it's missing or falsy
             if not getattr(existing, "title_key", None):
@@ -65,9 +108,9 @@ async def seed_roles_if_missing(session: AsyncSession) -> int:
     if roles_to_update:
         session.add_all(roles_to_update)
 
-    if roles_to_add or roles_to_update or session.dirty:
+    if commit and (roles_to_add or roles_to_update or session.dirty):
         await session.commit()
 
-    await RBAC_SERVICE.init_role_permissions_if_missing(session)
+    await RBAC_SERVICE.init_role_permissions_if_missing(session, commit=commit)
 
     return created

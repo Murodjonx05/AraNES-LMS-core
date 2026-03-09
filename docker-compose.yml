@@ -1,21 +1,40 @@
+x-service-defaults: &service-defaults
+  init: true
+  restart: unless-stopped
+
 services:
   app:
+    <<: *service-defaults
     build:
       context: .
       dockerfile: Dockerfile.core
-    env_file:
-      - .env
-    environment:
-      REDIS_URL: redis://redis:6379/0
-    ports:
-      - "8000:8000"
+    stop_grace_period: 20s
+    env_file: [.env]
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    ports: ["8000:8000"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      REDIS_URL: redis://redis:6379/0
+      STARTUP_DB_BOOTSTRAP_ENABLED: "false"
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-60}
+      GUNICORN_KEEPALIVE: ${GUNICORN_KEEPALIVE:-5}
+      GUNICORN_MAX_REQUESTS: ${GUNICORN_MAX_REQUESTS:-1000}
+      GUNICORN_MAX_REQUESTS_JITTER: ${GUNICORN_MAX_REQUESTS_JITTER:-100}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).getcode() == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   redis:
+    <<: *service-defaults
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    stop_grace_period: 10s
+    ports: ["127.0.0.1::6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

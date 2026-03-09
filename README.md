@@ -112,6 +112,12 @@ pip install -r requirements/dev.txt
 
 ### 3. Configure environment
 
+Start from the example file:
+
+```bash
+cp .env.example .env
+```
+
 At minimum, set:
 
 ```bash
@@ -126,7 +132,11 @@ There are two common runtime modes:
   Docker also reads `.env`, but `docker-compose.yml` overrides `REDIS_URL` to
   `redis://redis:6379/0` inside the container
 
-Optional overrides include `DATABASE_URL`, `HOST`, `PORT`, and CORS settings.
+If `DATABASE_URL` is unset, the app defaults to a local SQLite file at
+`data/db.sqlite3`.
+
+Optional overrides include `ENVIRONMENT`, `LOG_LEVEL`, `DATABASE_URL`, `HOST`,
+`PORT`, and CORS settings.
 
 Useful operational toggles:
 
@@ -153,7 +163,11 @@ Use `.env` as the shared configuration source:
 docker compose up --build
 ```
 
-Compose reads `.env`, then overrides only `REDIS_URL` for the containerized app because:
+Compose always starts the bundled Redis alongside the app. The app waits for a
+healthy Redis before startup and uses `redis://redis:6379/0` inside the Compose
+network.
+
+Compose reads `.env`, then overrides `REDIS_URL` for the containerized app:
 
 - native app needs `redis://localhost:6379/0`
 - Docker app needs `redis://redis:6379/0`
@@ -163,6 +177,12 @@ If you run the app natively and only Redis in Docker, keep using `.env` and set:
 ```bash
 export REDIS_ENABLED="true"
 export REDIS_URL="redis://localhost:6379/0"
+```
+
+To see which host port was assigned to the bundled Redis:
+
+```bash
+docker compose port redis 6379
 ```
 
 ### 4. Apply migrations
@@ -183,15 +203,38 @@ Or:
 uvicorn src.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+For containerized production-style runs, the Docker image uses `gunicorn` with
+`uvicorn.workers.UvicornWorker`. You can tune process settings through:
+
+```bash
+export WEB_CONCURRENCY="2"
+export GUNICORN_TIMEOUT="60"
+export GUNICORN_KEEPALIVE="5"
+export GUNICORN_MAX_REQUESTS="1000"
+export GUNICORN_MAX_REQUESTS_JITTER="100"
+```
+
+Container startup runs a one-time prestart bootstrap before Gunicorn:
+
+1. `alembic upgrade head`
+2. default role/i18n seed
+3. optional superuser bootstrap from env
+
+After that, Gunicorn workers start with `STARTUP_DB_BOOTSTRAP_ENABLED=false` in
+Compose, so DB bootstrap does not run again inside each worker.
+
 ## Startup Behavior
 
 On application startup, the service:
 
 1. builds runtime context and cache services
-2. checks Redis availability when enabled
+2. checks Redis availability when enabled and starts the Redis heartbeat loop
 3. seeds default roles and i18n translations
 4. bootstraps the initial superuser when env bootstrap is enabled
 5. if schema is missing, applies Alembic migrations and retries bootstrap once
+
+This in-process DB bootstrap is kept enabled by default for native/dev runs.
+Containerized Compose runs should prefer the dedicated prestart step instead.
 
 ## Current Constraints
 
@@ -199,8 +242,8 @@ On application startup, the service:
 - SQLite is the default local and development database
 - profiler behavior is env-switchable via `APP_PROFILING_ENABLED`
 - integration tests can be profiled, but profiler overhead still affects timing numbers
-- rate limiting is Redis-backed when Redis is enabled, with in-memory fallback for local/dev mode
-- Redis cache is optional; if unavailable, i18n reads fall back to the database automatically
+- rate limiting is Redis-backed when Redis bootstrap succeeds; bootstrap failure falls back to in-memory, while mid-request Redis limiter failure is denied with `429`
+- Redis-backed caches are optional; if Redis is unavailable, the app continues in degraded mode and falls back to the database/in-memory paths
 
 ## Tooling
 
@@ -222,7 +265,9 @@ alembic upgrade head
 alembic revision --autogenerate -m "describe change"
 ```
 
-Alembic uses project metadata from `src.database.Model.metadata` and imports model modules from `src/i18n/models.py` and `src/user_role/models.py`.
+Alembic uses project metadata from `src.database.Model.metadata`, plus the auth
+revocation table metadata, and imports model modules from `src/i18n/models.py`
+and `src/user_role/models.py`.
 
 ## Default Data
 
@@ -269,10 +314,6 @@ Repeatable wrapper:
 Integration tests now run with app profiling enabled by default, so request/function samples are
 written automatically into `logs/profile.log.json` unless you override the log directory.
 
-```bash
-./scripts/profile_tests.sh
-```
-
 Optional custom profile log directory:
 
 ```bash
@@ -300,8 +341,9 @@ async def cheap_helper():
 - `GET /ready` verifies database readiness
 - request logs are emitted through logger `aranes.request`
 - admin-sensitive mutating actions are emitted through logger `aranes.audit`
-- rate limiting uses Redis shared state when Redis is enabled, with in-memory fallback otherwise
-- Redis is used for optional application caches, including i18n read-through caching and auth revocation L2 cache
+- if Redis-backed rate-limiter bootstrap fails, the app falls back to an in-memory limiter
+- if an already-Redis-backed limiter breaks during request evaluation, the current request is denied with `429`
+- Redis-backed caches remain optional at the feature level; when Redis is unavailable, the service continues with degraded non-Redis paths
 - cached i18n endpoints:
   - `GET /api/v1/i18n/small`
   - `GET /api/v1/i18n/small/{key}`

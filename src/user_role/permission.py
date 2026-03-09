@@ -148,7 +148,12 @@ class RBACService:
     def get_default_role_permissions(self, role_name: str) -> dict[str, bool]:
         return dict(self._role_permission_defaults.get(role_name, {}))
 
-    async def init_role_permissions_if_missing(self, session: AsyncSession) -> int:
+    async def init_role_permissions_if_missing(
+        self,
+        session: AsyncSession,
+        *,
+        commit: bool = True,
+    ) -> int:
         result = await session.execute(select(Role))
         roles = list(result.scalars().all())
 
@@ -170,7 +175,7 @@ class RBACService:
                 session.add(role)
                 updated += 1
 
-        if updated:
+        if updated and commit:
             await session.commit()
 
         return updated

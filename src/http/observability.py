@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi.responses import JSONResponse
 
+from src.auth.dependencies import peek_cached_access_token_payload
 from src.runtime import RuntimeContext
 from src.utils.structured_logging import get_logger
 
@@ -28,15 +29,13 @@ def extract_actor_subject(request, runtime: RuntimeContext) -> str | None:
     if not token:
         request.state.actor_subject_resolved = True
         return None
-    try:
-        payload = runtime.security._decode_token(token)
-    except Exception as exc:
-        request.state.actor_subject_resolved = True
+    payload = peek_cached_access_token_payload(request)
+    if payload is None:
         SECURITY_LOGGER.warning(
             "actor subject extraction failed",
             request_id=getattr(request.state, "request_id", None),
-            error_type=exc.__class__.__name__,
         )
+        request.state.actor_subject_resolved = True
         return None
     request.state.actor_subject = getattr(payload, "sub", None)
     request.state.actor_subject_resolved = True

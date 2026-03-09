@@ -60,3 +60,24 @@ def test_build_app_config_allows_explicit_request_logging_override_in_production
 
     assert config.LOG_LEVEL == "ERROR"
     assert config.REQUEST_LOG_ENABLED is True
+
+
+def test_build_app_config_enables_startup_db_bootstrap_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _set_required_env(monkeypatch)
+
+    config = build_app_config()
+
+    assert config.STARTUP_DB_BOOTSTRAP_ENABLED is True
+
+
+def test_build_app_config_allows_disabling_startup_db_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("STARTUP_DB_BOOTSTRAP_ENABLED", "false")
+
+    config = build_app_config()
+
+    assert config.STARTUP_DB_BOOTSTRAP_ENABLED is False
