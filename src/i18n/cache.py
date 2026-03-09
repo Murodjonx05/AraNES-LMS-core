@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,6 +16,25 @@ _LARGE_LIST_ADAPTER = TypeAdapter(list[I18nLargeSchema])
 
 def _serialize_model_list(items: list[I18nSmallSchema] | list[I18nLargeSchema]) -> list[dict[str, Any]]:
     return [item.model_dump() for item in items]
+
+
+def _small_keys_are_strictly_increasing(items: list[I18nSmallSchema]) -> bool:
+    previous_key: str | None = None
+    for item in items:
+        if previous_key is not None and item.key <= previous_key:
+            return False
+        previous_key = item.key
+    return True
+
+
+def _large_keys_are_strictly_increasing(items: list[I18nLargeSchema]) -> bool:
+    previous_key: tuple[str, str] | None = None
+    for item in items:
+        current_key = (item.key1, item.key2)
+        if previous_key is not None and current_key <= previous_key:
+            return False
+        previous_key = current_key
+    return True
 
 
 def _normalize_small_item(payload: Any, *, expected_key: str | None = None) -> dict[str, Any] | None:
@@ -49,6 +69,8 @@ def _normalize_small_list(payload: Any) -> list[dict[str, Any]] | None:
         items = _SMALL_LIST_ADAPTER.validate_python(payload)
     except ValidationError:
         return None
+    if not _small_keys_are_strictly_increasing(items):
+        return None
     return _serialize_model_list(items)
 
 
@@ -56,6 +78,8 @@ def _normalize_large_list(payload: Any) -> list[dict[str, Any]] | None:
     try:
         items = _LARGE_LIST_ADAPTER.validate_python(payload)
     except ValidationError:
+        return None
+    if not _large_keys_are_strictly_increasing(items):
         return None
     return _serialize_model_list(items)
 
@@ -80,9 +104,23 @@ def build_large_list_cache_key() -> str:
 class I18nCacheService:
     backend: RedisCacheService
 
+    async def _delete_keys(self, keys: Iterable[str]) -> None:
+        cache_keys = list(dict.fromkeys(keys))
+        if not cache_keys:
+            return
+        delete_many = getattr(self.backend, "delete_many", None)
+        if callable(delete_many):
+            await delete_many(cache_keys)
+            return
+        for cache_key in cache_keys:
+            await self.backend.delete(cache_key)
+
     async def get_small_list(self) -> list[dict[str, Any]] | None:
         payload = await self.backend.get_json(build_small_list_cache_key())
         if payload is None:
+            return None
+        if not isinstance(payload, dict):
+            await self.invalidate_small_list()
             return None
         items = payload.get("items")
         normalized_items = _normalize_small_list(items)
@@ -126,9 +164,15 @@ class I18nCacheService:
     async def invalidate_small(self, key: str) -> None:
         await self.backend.delete(build_small_cache_key(key))
 
+    async def invalidate_small_entry_and_list(self, key: str) -> None:
+        await self._delete_keys((build_small_cache_key(key), build_small_list_cache_key()))
+
     async def get_large_list(self) -> list[dict[str, Any]] | None:
         payload = await self.backend.get_json(build_large_list_cache_key())
         if payload is None:
+            return None
+        if not isinstance(payload, dict):
+            await self.invalidate_large_list()
             return None
         items = payload.get("items")
         normalized_items = _normalize_large_list(items)
@@ -176,6 +220,9 @@ class I18nCacheService:
 
     async def invalidate_large(self, key1: str, key2: str) -> None:
         await self.backend.delete(build_large_cache_key(key1, key2))
+
+    async def invalidate_large_entry_and_list(self, key1: str, key2: str) -> None:
+        await self._delete_keys((build_large_cache_key(key1, key2), build_large_list_cache_key()))
 
 
 def get_request_i18n_cache_service(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from authx import AuthX, AuthXConfig
 from authx.schema import RequestToken
 
@@ -36,6 +37,16 @@ def test_issue_access_token_sets_access_type_subject_and_jti():
     assert payload.exp is not None
 
 
+def test_issue_access_token_can_embed_stable_user_id_claim():
+    security = _build_security()
+
+    token = issue_access_token("alice", user_id=42, security=security)
+    payload = _decode_access_token(security, token)
+
+    assert payload.sub == "alice"
+    assert payload.uid == 42
+
+
 def test_issue_access_token_generates_unique_jti_per_token():
     security = _build_security()
 
@@ -43,3 +54,19 @@ def test_issue_access_token_generates_unique_jti_per_token():
     second = _decode_access_token(security, issue_access_token("alice", security=security))
 
     assert first.jti != second.jti
+
+
+@pytest.mark.parametrize("username", ["", "   "])
+def test_issue_access_token_rejects_blank_subject(username: str):
+    security = _build_security()
+
+    with pytest.raises(ValueError, match="username must be a non-empty string"):
+        issue_access_token(username, security=security)
+
+
+@pytest.mark.parametrize("user_id", [0, -1, True])
+def test_issue_access_token_rejects_invalid_user_id_claim(user_id):
+    security = _build_security()
+
+    with pytest.raises(ValueError, match="user_id must be a positive integer"):
+        issue_access_token("alice", user_id=user_id, security=security)

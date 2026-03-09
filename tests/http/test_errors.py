@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 import json
 
+import pytest
 from starlette.datastructures import Headers, URL
 
 from src.http.errors import (
@@ -46,3 +47,13 @@ def test_build_jwt_decode_error_response_propagates_request_id_header():
     assert response.status_code == 401
     assert response.headers["X-Request-ID"] == "jwt-123"
     assert json.loads(response.body)["error_type"] == "ValueError"
+
+
+def test_build_jwt_decode_error_response_emits_security_warning_once(capsys: pytest.CaptureFixture[str]):
+    request = _FakeRequest(request_id="jwt-123")
+
+    build_jwt_decode_error_response(request, ValueError("bad token"))  # type: ignore[arg-type]
+    build_jwt_decode_error_response(request, ValueError("bad token"))  # type: ignore[arg-type]
+
+    stdout = capsys.readouterr().out
+    assert stdout.count("actor subject extraction failed") == 1

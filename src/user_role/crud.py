@@ -33,6 +33,11 @@ _USERNAME_UNIQUE_IDENTIFIERS = (
     "key 'username'",
     "for key 'username'",
 )
+_FOREIGN_KEY_VIOLATION_MARKERS = (
+    "foreign key constraint failed",
+    "violates foreign key constraint",
+    "foreign key constraint fails",
+)
 
 
 @dataclass(slots=True)
@@ -60,22 +65,37 @@ def _validated_permission_patch(permission_patch: dict[str, object]) -> Permissi
     return validate_permission_patch(permission_patch)
 
 
+def _is_foreign_key_violation(exc: IntegrityError) -> bool:
+    message = str(getattr(exc, "orig", exc)).lower()
+    return any(marker in message for marker in _FOREIGN_KEY_VIOLATION_MARKERS)
+
+
 async def _get_role_by_name(session: AsyncSession, role_name: str) -> Role | None:
     return await session.scalar(select(Role).where(Role.name == role_name))
+
+
+def _role_summary_query():
+    return select(Role).options(
+        load_only(Role.id, Role.name, Role.title_key, Role.permissions)
+    )
+
+
+def _user_summary_query():
+    return select(User).options(
+        load_only(User.id, User.username, User.role_id, User.permissions)
+    )
 
 
 # Roles CRUD
 async def list_roles(session: AsyncSession) -> list[Role]:
     result = await session.execute(
-        select(Role).options(
-            load_only(Role.id, Role.name, Role.title_key, Role.permissions)
-        ).order_by(Role.id)
+        _role_summary_query().order_by(Role.id)
     )
     return list(result.scalars().all())
 
 
 async def get_role_by_id(session: AsyncSession, role_id: int) -> Role:
-    db_role = await session.get(Role, role_id)
+    db_role = await session.scalar(_role_summary_query().where(Role.id == role_id).limit(1))
     if db_role is None:
         raise RoleNotFoundError("Role not found")
     return db_role
@@ -137,7 +157,16 @@ async def delete_role(session: AsyncSession, *, role_id: int) -> None:
         raise RoleInUseError(user_count)
 
     await session.delete(db_role)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        if _is_foreign_key_violation(exc):
+            concurrent_user_count = int(
+                (await session.scalar(select(func.count()).select_from(User).where(User.role_id == role_id))) or 0
+            )
+            raise RoleInUseError(max(concurrent_user_count, 1)) from exc
+        raise
 
 
 async def patch_role_permissions(
@@ -175,15 +204,13 @@ async def reset_role_permissions(session: AsyncSession) -> int:
 # Users CRUD
 async def list_users(session: AsyncSession) -> list[User]:
     result = await session.execute(
-        select(User)
-        .options(load_only(User.id, User.username, User.role_id, User.permissions))
-        .order_by(User.id)
+        _user_summary_query().order_by(User.id)
     )
     return list(result.scalars().all())
 
 
 async def get_user_by_id(session: AsyncSession, user_id: int) -> User:
-    db_user = await session.get(User, user_id)
+    db_user = await session.scalar(_user_summary_query().where(User.id == user_id).limit(1))
     if db_user is None:
         raise UserNotFoundError("User not found")
     return db_user
@@ -215,6 +242,8 @@ async def create_user_admin(
         await session.rollback()
         if is_unique_violation(exc, identifiers=_USERNAME_UNIQUE_IDENTIFIERS):
             raise UsernameAlreadyExistsError("Username already exists") from exc
+        if _is_foreign_key_violation(exc):
+            raise RoleNotFoundError("Role not found") from exc
         raise
     return db_user
 
@@ -232,7 +261,7 @@ async def update_user_admin(
         db_user.username = username
 
     if role_id is not None:
-        if await session.get(Role, role_id) is None:
+        if await session.scalar(select(Role.id).where(Role.id == role_id).limit(1)) is None:
             raise RoleNotFoundError("Role not found")
         db_user.role_id = role_id
 
@@ -242,6 +271,8 @@ async def update_user_admin(
         await session.rollback()
         if is_unique_violation(exc, identifiers=_USERNAME_UNIQUE_IDENTIFIERS):
             raise UsernameAlreadyExistsError("Username already exists") from exc
+        if _is_foreign_key_violation(exc):
+            raise RoleNotFoundError("Role not found") from exc
         raise
     return db_user
 

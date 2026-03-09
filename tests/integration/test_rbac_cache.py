@@ -27,6 +27,7 @@ class _FakeCache:
     def __init__(self):
         self.values: dict[str, dict] = {}
         self.deleted: list[str] = []
+        self.delete_many_calls: list[list[str]] = []
 
     async def get_json(self, key: str):
         return self.values.get(key)
@@ -37,6 +38,12 @@ class _FakeCache:
     async def delete(self, key: str):
         self.deleted.append(key)
         self.values.pop(key, None)
+
+    async def delete_many(self, keys: list[str]):
+        self.delete_many_calls.append(list(keys))
+        for key in keys:
+            self.deleted.append(key)
+            self.values.pop(key, None)
 
     async def close(self):
         return None
@@ -63,6 +70,20 @@ async def test_rbac_cache_service_wraps_generic_backend():
     assert await service.get_role(1) == role_payload
     assert await service.get_user_list() == [user_payload]
     assert await service.get_user(1) == user_payload
+
+
+@pytest.mark.asyncio
+async def test_rbac_cache_service_bulk_invalidates_with_single_backend_call():
+    backend = _FakeCache()
+    service = RbacCacheService(backend=backend)
+
+    await service.invalidate_roles([1, 2, 2], include_list=True)
+    await service.invalidate_users([3, 4], include_list=True)
+
+    assert backend.delete_many_calls == [
+        [build_role_cache_key(1), build_role_cache_key(2), build_role_list_cache_key()],
+        [build_user_cache_key(3), build_user_cache_key(4), build_user_list_cache_key()],
+    ]
 
 
 @pytest.mark.asyncio
@@ -160,3 +181,111 @@ async def test_schema_invalid_rbac_cache_entries_are_deleted_and_fall_back_to_db
 
     assert build_role_cache_key(1) in fake_cache.deleted
     assert build_role_list_cache_key() in fake_cache.deleted
+
+
+@pytest.mark.asyncio
+async def test_noncanonical_role_list_cache_is_deleted_and_falls_back_to_db(
+    client: httpx.AsyncClient,
+    superuser_tokens: dict[str, str],
+):
+    runtime = _get_runtime(client)
+    fake_cache = _FakeCache()
+    fake_cache.values[build_role_list_cache_key()] = {
+        "items": [
+            {
+                "id": 2,
+                "name": "Admin",
+                "title_key": "role.admin.title",
+                "permissions": {},
+            },
+            {
+                "id": 1,
+                "name": "SuperAdmin",
+                "title_key": "role.super_admin.title",
+                "permissions": {},
+            },
+        ]
+    }
+    runtime.cache_service = fake_cache
+
+    response = await client.get("/api/v1/rbac/roles", headers=_auth_headers(superuser_tokens["access"]))
+    assert response.status_code == 200, response.text
+
+    ids = [item["id"] for item in response.json()]
+    assert ids == sorted(ids)
+    assert ids[:2] == [1, 2]
+    assert build_role_list_cache_key() in fake_cache.deleted
+
+
+@pytest.mark.asyncio
+async def test_noncanonical_user_list_cache_is_deleted_and_falls_back_to_db(
+    client: httpx.AsyncClient,
+    superuser_tokens: dict[str, str],
+    regular_user_tokens: dict[str, str],
+):
+    runtime = _get_runtime(client)
+    fake_cache = _FakeCache()
+    fake_cache.values[build_user_list_cache_key()] = {
+        "items": [
+            {
+                "id": regular_user_tokens["user_id"],
+                "username": regular_user_tokens["username"],
+                "role_id": 6,
+                "permissions": {},
+            },
+            {
+                "id": 1,
+                "username": "superuser",
+                "role_id": 1,
+                "permissions": {},
+            },
+        ]
+    }
+    runtime.cache_service = fake_cache
+
+    response = await client.get("/api/v1/rbac/users", headers=_auth_headers(superuser_tokens["access"]))
+    assert response.status_code == 200, response.text
+
+    ids = [item["id"] for item in response.json()]
+    assert ids == sorted(ids)
+    assert ids[0] == 1
+    assert regular_user_tokens["user_id"] in ids
+    assert build_user_list_cache_key() in fake_cache.deleted
+
+
+@pytest.mark.asyncio
+async def test_reset_user_permissions_uses_batched_cache_invalidation(
+    client: httpx.AsyncClient,
+    superuser_tokens: dict[str, str],
+    regular_user_tokens: dict[str, str],
+):
+    runtime = _get_runtime(client)
+    fake_cache = _FakeCache()
+    runtime.cache_service = fake_cache
+
+    response = await client.post("/api/v1/rbac/users/reset", headers=_auth_headers(superuser_tokens["access"]))
+
+    assert response.status_code == 200, response.text
+    assert fake_cache.delete_many_calls
+    batched_keys = fake_cache.delete_many_calls[-1]
+    assert build_user_list_cache_key() in batched_keys
+    assert build_user_cache_key(1) in batched_keys
+    assert build_user_cache_key(regular_user_tokens["user_id"]) in batched_keys
+
+
+@pytest.mark.asyncio
+async def test_reset_role_permissions_uses_batched_cache_invalidation_without_superadmin_key(
+    client: httpx.AsyncClient,
+    superuser_tokens: dict[str, str],
+):
+    runtime = _get_runtime(client)
+    fake_cache = _FakeCache()
+    runtime.cache_service = fake_cache
+
+    response = await client.post("/api/v1/rbac/roles/reset", headers=_auth_headers(superuser_tokens["access"]))
+
+    assert response.status_code == 200, response.text
+    assert fake_cache.delete_many_calls
+    batched_keys = fake_cache.delete_many_calls[-1]
+    assert build_role_list_cache_key() in batched_keys
+    assert build_role_cache_key(1) not in batched_keys

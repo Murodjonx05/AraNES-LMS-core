@@ -94,6 +94,23 @@ def is_unique_violation(exc: IntegrityError, *, identifiers: tuple[str, ...]) ->
     return any(identifier.lower() in message for identifier in identifiers)
 
 
+def _runtime_session_factory(runtime: object | None) -> async_sessionmaker[AsyncSession] | None:
+    if runtime is None:
+        return None
+    session_factory = getattr(runtime, "session_factory", None)
+    if session_factory is None:
+        return None
+    return session_factory
+
+
+def _request_runtime(request: Request | None) -> object | None:
+    if request is None:
+        return None
+    app = getattr(request, "app", None)
+    app_state = getattr(app, "state", None)
+    return getattr(app_state, "runtime", None)
+
+
 def _resolve_session_factory(
     *,
     request: Request | None = None,
@@ -102,10 +119,12 @@ def _resolve_session_factory(
 ) -> async_sessionmaker[AsyncSession]:
     if session_factory is not None:
         return session_factory
-    if runtime is not None:
-        return runtime.session_factory
-    if request is not None and (app_runtime := getattr(request.app.state, "runtime", None)) is not None:
-        return app_runtime.session_factory
+    runtime_session_factory = _runtime_session_factory(runtime)
+    if runtime_session_factory is not None:
+        return runtime_session_factory
+    request_runtime_session_factory = _runtime_session_factory(_request_runtime(request))
+    if request_runtime_session_factory is not None:
+        return request_runtime_session_factory
     return get_default_runtime().session_factory
 
 

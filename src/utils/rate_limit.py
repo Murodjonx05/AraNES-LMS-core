@@ -25,11 +25,85 @@ from src.utils.structured_logging import get_logger
 _RATE_LIMIT_BUCKET_NAMESPACE = "rate_limit"
 _RATE_LIMIT_EXCEEDED_MESSAGE = "Rate limit exceeded"
 _OPERABILITY_LOGGER = get_logger("aranes.operability")
+_ROUTE_SCOPE_CACHE_ATTR = "_fastapi_rate_limit_route_scope_cache"
 
 
 async def _rate_limit_callback(request: Request, response: Response) -> None:
     del request, response
     raise HTTPException(status_code=429, detail=_RATE_LIMIT_EXCEEDED_MESSAGE)
+
+
+def _route_scope_cache(request: Request) -> dict[tuple[int, int, str], tuple[bool, str]]:
+    cache = getattr(request.app.state, _ROUTE_SCOPE_CACHE_ATTR, None)
+    if isinstance(cache, dict):
+        return cache
+    cache = {}
+    setattr(request.app.state, _ROUTE_SCOPE_CACHE_ATTR, cache)
+    return cache
+
+
+def _resolve_route_scope(
+    request: Request,
+    dependency: FastAPIRateLimiter,
+) -> tuple[bool, str]:
+    route = request.scope.get("route")
+    if route is not None:
+        cache_key = (id(route), id(dependency), request.method)
+        cache = _route_scope_cache(request)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        skip_limiter = bool(
+            hasattr(route, "endpoint") and getattr(route.endpoint, "_skip_limiter", False)
+        )
+        dep_index = 0
+        for index, route_dependency in enumerate(getattr(route, "dependencies", ()) or ()):
+            if getattr(route_dependency, "dependency", None) is dependency:
+                dep_index = index
+                break
+        route_path = (
+            getattr(route, "path_format", None)
+            or getattr(route, "path", None)
+            or request.scope["path"]
+        )
+        resolved = (skip_limiter, f"{request.method}:{route_path}:{dep_index}")
+        cache[cache_key] = resolved
+        return resolved
+
+    route_index = 0
+    dep_index = 0
+    skip_limiter = False
+    for index, app_route in enumerate(request.app.routes):
+        if (
+            app_route.path == request.scope["path"]
+            and hasattr(app_route, "methods")
+            and request.method in app_route.methods
+        ):
+            route_index = index
+            if hasattr(app_route, "endpoint") and getattr(app_route.endpoint, "_skip_limiter", False):
+                skip_limiter = True
+                break
+            for dependency_index, route_dependency in enumerate(app_route.dependencies):
+                if dependency is route_dependency.dependency:
+                    dep_index = dependency_index
+                    break
+            break
+
+    return skip_limiter, f"{route_index}:{dep_index}"
+
+
+class _CachedFastAPIRateLimiter(FastAPIRateLimiter):
+    async def __call__(self, request: Request, response: Response):
+        skip_limiter, route_scope = _resolve_route_scope(request, self)
+        if skip_limiter:
+            return
+
+        rate_key = await self.identifier(request)
+        key = f"{rate_key}:{route_scope}"
+        success = await self.limiter.try_acquire_async(key, blocking=self.blocking)
+        if not success:
+            return await self.callback(request, response)
 
 
 @dataclass(slots=True)
@@ -110,6 +184,14 @@ def _runtime_signature(runtime: RuntimeContext) -> tuple[object, ...]:
     )
 
 
+def _is_redis_backed_factory(factory: _KeyedBucketFactory) -> bool:
+    return (
+        factory.cache_service is not None
+        and factory.cache_service.client is not None
+        and factory.script_hash is not None
+    )
+
+
 async def _build_dependency_state(runtime: RuntimeContext) -> _RateLimitDependencyState:
     try:
         factory = await _KeyedBucketFactory.create_for_runtime(runtime)
@@ -122,7 +204,7 @@ async def _build_dependency_state(runtime: RuntimeContext) -> _RateLimitDependen
                 Duration.SECOND * runtime.config.RATE_LIMIT_WINDOW_SECONDS,
             )
         )
-    dependency = FastAPIRateLimiter(
+    dependency = _CachedFastAPIRateLimiter(
         limiter=Limiter(factory),
         identifier=default_identifier,
         callback=_rate_limit_callback,
@@ -131,7 +213,7 @@ async def _build_dependency_state(runtime: RuntimeContext) -> _RateLimitDependen
     return _RateLimitDependencyState(
         runtime_signature=_runtime_signature(runtime),
         dependency=dependency,
-        redis_backed=runtime.cache_service.enabled and runtime.cache_service.client is not None,
+        redis_backed=_is_redis_backed_factory(factory),
     )
 
 

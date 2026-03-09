@@ -153,9 +153,11 @@ class RBACService:
         session: AsyncSession,
         *,
         commit: bool = True,
+        roles: list[Role] | None = None,
     ) -> int:
-        result = await session.execute(select(Role))
-        roles = list(result.scalars().all())
+        if roles is None:
+            result = await session.execute(select(Role))
+            roles = list(result.scalars().all())
 
         updated = 0
         for role in roles:

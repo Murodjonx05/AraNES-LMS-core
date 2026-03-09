@@ -72,7 +72,8 @@ async def upsert_small(
         session,
         key=payload.key,
         translation_patch=payload.data,
+        existing_item=existing_item,
+        existing_item_loaded=True,
     )
-    await cache_service.invalidate_small(payload.key)
-    await cache_service.invalidate_small_list()
+    await cache_service.invalidate_small_entry_and_list(payload.key)
     return serialize_small(item)

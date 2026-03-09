@@ -3,6 +3,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.i18n.models import TranslateDesc, TranslateTitle
 from src.i18n.translates import (
+    LargeTranslates,
+    SmallTranslates,
     get_registered_large_translates,
     get_registered_small_translates,
 )
@@ -24,15 +26,38 @@ def ensure_translate_registrars_loaded() -> None:
     _import_translate_registrars()
 
 
-async def seed_small_i18n_titles_if_missing(session: AsyncSession, *, commit: bool = True) -> int:
+def _resolve_registered_small_translates(
+    registered_translates: SmallTranslates | None,
+) -> SmallTranslates:
+    if registered_translates is not None:
+        return registered_translates
     ensure_translate_registrars_loaded()
+    return get_registered_small_translates()
+
+
+def _resolve_registered_large_translates(
+    registered_translates: LargeTranslates | None,
+) -> LargeTranslates:
+    if registered_translates is not None:
+        return registered_translates
+    ensure_translate_registrars_loaded()
+    return get_registered_large_translates()
+
+
+async def seed_small_i18n_titles_if_missing(
+    session: AsyncSession,
+    *,
+    commit: bool = True,
+    registered_translates: SmallTranslates | None = None,
+) -> int:
+    registered_translates = _resolve_registered_small_translates(registered_translates)
 
     result = await session.execute(select(TranslateTitle.key))
     existing = set(result.scalars().all())
 
     created = 0
     to_add = []
-    for translate_key, translate_data in get_registered_small_translates().items():
+    for translate_key, translate_data in registered_translates.items():
         if translate_key in existing:
             continue
 
@@ -51,15 +76,16 @@ async def seed_large_i18n_descriptions_if_missing(
     session: AsyncSession,
     *,
     commit: bool = True,
+    registered_translates: LargeTranslates | None = None,
 ) -> int:
-    ensure_translate_registrars_loaded()
+    registered_translates = _resolve_registered_large_translates(registered_translates)
 
     result = await session.execute(select(TranslateDesc.key1, TranslateDesc.key2))
     existing = set(result.all())
 
     created = 0
     to_add = []
-    for (key1, key2), translate_data in get_registered_large_translates().items():
+    for (key1, key2), translate_data in registered_translates.items():
         if (key1, key2) in existing:
             continue
 

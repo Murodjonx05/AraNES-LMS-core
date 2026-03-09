@@ -3,13 +3,20 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config as AlembicConfig
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.database import is_in_memory_sqlite_url
 from src.runtime import RuntimeContext, get_default_runtime
 
 logger = logging.getLogger(__name__)
+_MISSING_SCHEMA_MARKERS = (
+    "no such table",
+    "does not exist",
+    "doesn't exist",
+    "base table or view not found",
+    "undefined table",
+)
 
 
 def run_startup_alembic_upgrade(*, runtime: RuntimeContext | None = None) -> None:
@@ -23,17 +30,18 @@ def run_startup_alembic_upgrade(*, runtime: RuntimeContext | None = None) -> Non
     logger.info("Applied Alembic migrations on startup.")
 
 
-def is_missing_schema_error(exc: OperationalError) -> bool:
+def is_missing_schema_error(exc: DBAPIError) -> bool:
     msg = str(exc).lower()
-    return "no such table" in msg or "does not exist" in msg
+    return any(marker in msg for marker in _MISSING_SCHEMA_MARKERS)
 
 
-def raise_missing_schema_help(exc: OperationalError) -> None:
+def raise_missing_schema_help(exc: DBAPIError) -> None:
     if not is_missing_schema_error(exc):
         raise exc
     raise RuntimeError(
-        "Database schema is missing. Run `alembic upgrade head` "
-        "or let the app retry startup with automatic Alembic migration."
+        "Database schema is missing or incomplete. Run `alembic upgrade head`. "
+        "Automatic startup migration is only attempted when DB bootstrap is enabled "
+        "and the backend reports a missing-schema error."
     ) from exc
 
 
@@ -56,14 +64,26 @@ async def run_bootstrap_seeding(
         seed_large_i18n_descriptions_if_missing,
         seed_small_i18n_titles_if_missing,
     )
+    from src.i18n.translates import get_registered_large_translates, get_registered_small_translates
     from src.user_role.bootstrap import seed_roles_if_missing
 
-    runtime = runtime or get_default_runtime()
-    session_factory = session_factory or runtime.session_factory
+    if session_factory is None:
+        runtime = runtime or get_default_runtime()
+        session_factory = runtime.session_factory
 
     async with session_factory() as session:
         async with session.begin():
             await seed_roles_if_missing(session, commit=False)
             ensure_translate_registrars_loaded()
-            await seed_small_i18n_titles_if_missing(session, commit=False)
-            await seed_large_i18n_descriptions_if_missing(session, commit=False)
+            registered_small_translates = get_registered_small_translates()
+            registered_large_translates = get_registered_large_translates()
+            await seed_small_i18n_titles_if_missing(
+                session,
+                commit=False,
+                registered_translates=registered_small_translates,
+            )
+            await seed_large_i18n_descriptions_if_missing(
+                session,
+                commit=False,
+                registered_translates=registered_large_translates,
+            )

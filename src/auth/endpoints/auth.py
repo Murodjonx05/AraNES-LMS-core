@@ -55,7 +55,11 @@ async def signup(payload: UserAuthBody, session: DbSession, request: Request):
     except UsernameAlreadyExistsError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
-    access_token = issue_access_token(user.username, security=runtime.security)
+    access_token = issue_access_token(
+        user.username,
+        user_id=user.id,
+        security=runtime.security,
+    )
     return AuthTokenResponse(access_token=access_token)
 
 
@@ -77,7 +81,11 @@ async def login(payload: UserAuthBody, session: DbSession, request: Request):
         )
 
     runtime = get_runtime_from_request(request)
-    access_token = issue_access_token(user.username, security=runtime.security)
+    access_token = issue_access_token(
+        user.username,
+        user_id=user.id,
+        security=runtime.security,
+    )
     return AuthTokenResponse(access_token=access_token)
 
 

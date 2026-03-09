@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
+import uuid
 
 
 def bearer_headers(token: str) -> dict[str, str]:
@@ -74,3 +75,45 @@ async def test_login_me_and_reset_access_flow(client: httpx.AsyncClient):
         headers=bearer_headers(new_access_token),
     )
     assert me_after_relogin.status_code == 200, me_after_relogin.text
+
+
+@pytest.mark.asyncio
+async def test_me_uses_stable_user_id_claim_after_username_change_and_reuse(
+    client: httpx.AsyncClient,
+    superuser_tokens: dict[str, str],
+):
+    original_username = f"user{uuid.uuid4().hex[:8]}"
+    renamed_username = f"user{uuid.uuid4().hex[:8]}"
+
+    signup_response = await client.post(
+        "/api/v1/auth/signup",
+        json={"username": original_username, "password": "StrongPass123"},
+    )
+    assert signup_response.status_code == 201, signup_response.text
+    access_token = signup_response.json()["access_token"]
+
+    me_before_rename = await client.get("/api/v1/auth/me", headers=bearer_headers(access_token))
+    assert me_before_rename.status_code == 200, me_before_rename.text
+    user_id = me_before_rename.json()["id"]
+
+    admin_headers = bearer_headers(superuser_tokens["access"])
+    rename_response = await client.patch(
+        f"/api/v1/rbac/users/{user_id}",
+        headers=admin_headers,
+        json={"username": renamed_username},
+    )
+    assert rename_response.status_code == 200, rename_response.text
+    assert rename_response.json()["username"] == renamed_username
+
+    recreate_old_username = await client.post(
+        "/api/v1/rbac/users",
+        headers=admin_headers,
+        json={"username": original_username, "password": "StrongPass123", "role_id": 6},
+    )
+    assert recreate_old_username.status_code == 201, recreate_old_username.text
+
+    me_after_rename = await client.get("/api/v1/auth/me", headers=bearer_headers(access_token))
+    assert me_after_rename.status_code == 200, me_after_rename.text
+    payload = me_after_rename.json()
+    assert payload["id"] == user_id
+    assert payload["username"] == renamed_username
