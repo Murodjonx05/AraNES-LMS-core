@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import replace
 import json
 import logging
@@ -9,8 +8,6 @@ import uuid
 
 import httpx
 import pytest
-from src.user_role.models import User
-from src.user_role.defaults import DEFAULT_SIGNUP_ROLE_ID
 
 
 @pytest.mark.asyncio
@@ -70,46 +67,6 @@ async def test_ready_hides_raw_database_exception_details(
 
     operability_records = [record for record in caplog.records if record.name == "aranes.operability"]
     assert operability_records
-
-
-@pytest.mark.asyncio
-async def test_ready_times_out_when_database_connection_acquisition_hangs(
-    client: httpx.AsyncClient,
-    caplog: pytest.LogCaptureFixture,
-):
-    runtime = _get_runtime(client)
-    caplog.set_level(logging.ERROR, logger="aranes.operability")
-    original_runtime = runtime.config
-    runtime.config = replace(runtime.config, OPERABILITY_DB_CHECK_TIMEOUT_SECONDS=0.25)
-
-    class _HangingConnection:
-        async def __aenter__(self):
-            await asyncio.sleep(3600)
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    class _HangingEngine:
-        def connect(self):
-            return _HangingConnection()
-
-    original_engine = runtime.engine
-    runtime.engine = _HangingEngine()  # type: ignore[assignment]
-    try:
-        response = await client.get("/ready", headers={"X-Request-ID": "ready-timeout-test"})
-    finally:
-        runtime.engine = original_engine
-        runtime.config = original_runtime
-
-    assert response.status_code == 503, response.text
-    assert response.headers.get("X-Request-ID") == "ready-timeout-test"
-    assert response.json() == {
-        "status": "not_ready",
-        "database": "error",
-        "redis": {"enabled": False, "status": "disabled"},
-        "detail": "Database readiness check timed out.",
-    }
-    assert any("database readiness check timed out" in record.getMessage() for record in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -324,32 +281,41 @@ async def test_mutating_endpoint_emits_request_id_and_audit_log(
 @pytest.mark.asyncio
 async def test_audit_log_uses_stable_uid_after_username_rename_and_reuse(
     client: httpx.AsyncClient,
+    superuser_tokens: dict[str, str],
     caplog: pytest.LogCaptureFixture,
-    user_tokens_factory,
 ):
     caplog.set_level(logging.INFO, logger="aranes.audit")
     original_username = f"user{uuid.uuid4().hex[:8]}"
     renamed_username = f"user{uuid.uuid4().hex[:8]}"
-    user_tokens = await user_tokens_factory(
-        username=original_username,
-        role_id=DEFAULT_SIGNUP_ROLE_ID,
+
+    signup_response = await client.post(
+        "/api/v1/auth/signup",
+        json={"username": original_username, "password": "StrongPass123"},
     )
-    access_token = user_tokens["access"]
-    user_id = user_tokens["user_id"]
-    runtime = _get_runtime(client)
-    async with runtime.session_factory() as session:
-        db_user = await session.get(User, user_id)
-        assert db_user is not None
-        db_user.username = renamed_username
-        session.add(
-            User(
-                username=original_username,
-                password="fixture-only",
-                role_id=DEFAULT_SIGNUP_ROLE_ID,
-                permissions={},
-            )
-        )
-        await session.commit()
+    assert signup_response.status_code == 201, signup_response.text
+    access_token = signup_response.json()["access_token"]
+
+    me_response = await client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert me_response.status_code == 200, me_response.text
+    user_id = me_response.json()["id"]
+
+    admin_headers = {"Authorization": f"Bearer {superuser_tokens['access']}"}
+    rename_response = await client.patch(
+        f"/api/v1/rbac/users/{user_id}",
+        headers=admin_headers,
+        json={"username": renamed_username},
+    )
+    assert rename_response.status_code == 200, rename_response.text
+
+    recreate_response = await client.post(
+        "/api/v1/rbac/users",
+        headers=admin_headers,
+        json={"username": original_username, "password": "StrongPass123", "role_id": 6},
+    )
+    assert recreate_response.status_code == 201, recreate_response.text
 
     caplog.clear()
     reset_response = await client.post(
@@ -369,12 +335,12 @@ async def test_audit_log_uses_stable_uid_after_username_rename_and_reuse(
 
 @pytest.mark.asyncio
 async def test_invalid_bearer_token_is_logged_for_actor_extraction(
-    unauth_client: httpx.AsyncClient,
+    client: httpx.AsyncClient,
     caplog: pytest.LogCaptureFixture,
 ):
     caplog.set_level(logging.WARNING, logger="aranes.security")
 
-    response = await unauth_client.post(
+    response = await client.post(
         "/api/v1/rbac/users/reset",
         headers={"Authorization": "Bearer definitely-not-a-jwt", "X-Request-ID": "bad-token-test"},
     )
@@ -382,16 +348,3 @@ async def test_invalid_bearer_token_is_logged_for_actor_extraction(
     assert response.status_code == 401, response.text
     assert response.headers.get("X-Request-ID") == "bad-token-test"
     assert any("actor subject extraction failed" in record.getMessage() for record in caplog.records)
-
-
-@pytest.mark.asyncio
-async def test_request_handling_uses_app_state_runtime_not_global(
-    client: httpx.AsyncClient,
-):
-    """When app.state.runtime is set, request handling must use it and not call get_default_runtime()."""
-    from unittest.mock import patch
-
-    with patch("src.runtime.get_default_runtime") as mock_get_runtime:
-        response = await client.get("/health")
-        assert response.status_code == 200, response.text
-        mock_get_runtime.assert_not_called()

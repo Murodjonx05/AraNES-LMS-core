@@ -15,7 +15,6 @@ _ACCESS_TOKEN_REQUIRED_DEPENDENCY_SECURITY_STATE_KEY = "_access_token_required_d
 
 
 def get_runtime_from_request(request: Request) -> RuntimeContext:
-    """Prefer app.state.runtime (set in create_app). Fallback for legacy/standalone callers."""
     return getattr(request.app.state, "runtime", None) or get_default_runtime()
 
 
@@ -38,15 +37,14 @@ def _get_access_token_required_dependency(request: Request):
 
     async def dependency(inner_request: Request) -> Any:
         request_token = await get_request_access_token(inner_request)
-        payload = security.verify_token(
+        if await security.is_token_in_blocklist(request_token.token):
+            raise RevokedTokenError("Token has been revoked")
+        return security.verify_token(
             request_token,
             verify_type=True,
             verify_fresh=False,
             verify_csrf=False,
         )
-        if await security.is_token_in_blocklist(request_token.token):
-            raise RevokedTokenError("Token has been revoked")
-        return payload
 
     if app_state is not None:
         setattr(app_state, _ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY, dependency)

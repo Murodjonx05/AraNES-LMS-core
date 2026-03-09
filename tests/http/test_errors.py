@@ -49,26 +49,11 @@ def test_build_jwt_decode_error_response_propagates_request_id_header():
     assert json.loads(response.body)["error_type"] == "ValueError"
 
 
-def test_build_jwt_decode_error_response_emits_security_warning_once(
-    caplog: pytest.LogCaptureFixture,
-    capsys: pytest.CaptureFixture[str],
-):
+def test_build_jwt_decode_error_response_emits_security_warning_once(capsys: pytest.CaptureFixture[str]):
     request = _FakeRequest(request_id="jwt-123")
-    caplog.set_level("WARNING", logger="aranes.security")
 
     build_jwt_decode_error_response(request, ValueError("bad token"))  # type: ignore[arg-type]
     build_jwt_decode_error_response(request, ValueError("bad token"))  # type: ignore[arg-type]
 
-    matching_records = [
-        record
-        for record in caplog.records
-        if record.name == "aranes.security"
-        and "actor subject extraction failed" in record.getMessage()
-    ]
-    if matching_records:
-        assert len(matching_records) == 1
-        return
-
-    captured = capsys.readouterr()
-    combined_output = captured.out + captured.err
-    assert combined_output.count("actor subject extraction failed") == 1
+    stdout = capsys.readouterr().out
+    assert stdout.count("actor subject extraction failed") == 1

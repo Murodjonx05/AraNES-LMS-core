@@ -209,6 +209,41 @@ async def test_is_token_revoked_scopes_identity_cache_to_security(clean_revocati
 
 
 @pytest.mark.asyncio
+async def test_is_token_revoked_scopes_local_cache_to_engine():
+    token = "shared-token"
+    expires_at = service._utc_now() + service.timedelta(minutes=5)
+    security = _FixedSecurity(jti="shared-jti", exp=expires_at)
+    revoked_engine = await _create_revocation_engine()
+    clean_engine = await _create_revocation_engine()
+    try:
+        await service.revoke_token(token, security=security, engine=revoked_engine)
+
+        assert await service.is_token_revoked(token, security=security, engine=revoked_engine) is True
+        assert await service.is_token_revoked(token, security=security, engine=clean_engine) is False
+    finally:
+        await revoked_engine.dispose()
+        await clean_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_is_token_revoked_scopes_identity_cache_to_security():
+    token = "shared-token"
+    expires_at = service._utc_now() + service.timedelta(minutes=5)
+    first_security = _FixedSecurity(jti="first-jti", exp=expires_at)
+    second_security = _FixedSecurity(jti="second-jti", exp=expires_at)
+    first_engine = await _create_revocation_engine()
+    second_engine = await _create_revocation_engine()
+    try:
+        assert await service.is_token_revoked(token, security=first_security, engine=first_engine) is False
+        await service._store_revoked_jti(second_engine, "second-jti", expires_at)
+
+        assert await service.is_token_revoked(token, security=second_security, engine=second_engine) is True
+    finally:
+        await first_engine.dispose()
+        await second_engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_legacy_revoked_token_expires(
     monkeypatch: pytest.MonkeyPatch,
     clean_revocation_engine,

@@ -6,28 +6,15 @@ from src.auth.dependencies import peek_cached_access_token_payload
 from src.runtime import RuntimeContext
 from src.utils.structured_logging import get_logger
 
-_AUDITED_PREFIXES = ("/api/v1/rbac", "/api/v1/i18n", "/api/v1/plugins")
+_AUDITED_PREFIXES = ("/api/v1/rbac", "/api/v1/i18n")
 _AUDITED_EXACT_PATHS = frozenset({"/api/v1/auth/reset"})
-_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _CURRENT_ACTOR_STATE_KEY = "_current_actor"
 _CURRENT_USER_ROLE_STATE_KEY = "_current_user_with_role"
 _ACTOR_SUBJECT_WARNING_STATE_KEY = "_actor_subject_warning_emitted"
-
-
-def request_logger():
-    return get_logger("aranes.request")
-
-
-def audit_logger():
-    return get_logger("aranes.audit")
-
-
-def operability_logger():
-    return get_logger("aranes.operability")
-
-
-def security_logger():
-    return get_logger("aranes.security")
+REQUEST_LOGGER = get_logger("aranes.request")
+AUDIT_LOGGER = get_logger("aranes.audit")
+OPERABILITY_LOGGER = get_logger("aranes.operability")
+SECURITY_LOGGER = get_logger("aranes.security")
 
 
 def _payload_claim(payload: object, key: str) -> object | None:
@@ -80,18 +67,12 @@ def extract_actor_subject(request, runtime: RuntimeContext) -> str | None:
         return cached
     if getattr(request.state, "actor_subject_resolved", False):
         return None
+
     actor_subject = _stable_actor_subject_from_request_state(request)
     if actor_subject is not None:
         request.state.actor_subject = actor_subject
         request.state.actor_subject_resolved = True
         return actor_subject
-
-    # Reuse payload from auth dependency when present to avoid any extra work.
-    payload = peek_cached_access_token_payload(request)
-    if payload is not None:
-        request.state.actor_subject = _stable_actor_subject_from_payload(payload)
-        request.state.actor_subject_resolved = True
-        return request.state.actor_subject
 
     auth_header = request.headers.get("authorization", "").strip()
     if not auth_header.lower().startswith("bearer "):
@@ -101,23 +82,20 @@ def extract_actor_subject(request, runtime: RuntimeContext) -> str | None:
     if not token:
         request.state.actor_subject_resolved = True
         return None
-    warn_actor_subject_extraction_failed(request)
+    payload = peek_cached_access_token_payload(request)
+    if payload is None:
+        warn_actor_subject_extraction_failed(request)
+        request.state.actor_subject_resolved = True
+        return None
+    request.state.actor_subject = _stable_actor_subject_from_payload(payload)
     request.state.actor_subject_resolved = True
-    return None
+    return request.state.actor_subject
 
 
 def should_audit_request(path: str, method: str) -> bool:
-    if method in _READ_METHODS or method.upper() in _READ_METHODS:
+    if method.upper() in {"GET", "HEAD", "OPTIONS"}:
         return False
     return path in _AUDITED_EXACT_PATHS or path.startswith(_AUDITED_PREFIXES)
-
-
-def needs_request_observation(runtime: RuntimeContext, method: str, path: str) -> bool:
-    if runtime.config.REQUEST_LOG_ENABLED:
-        return True
-    if not runtime.config.AUDIT_LOG_ENABLED:
-        return False
-    return should_audit_request(path, method)
 
 
 def client_host(request) -> str:
@@ -134,7 +112,7 @@ def apply_request_id(response: JSONResponse, request_id: str):
 def warn_actor_subject_extraction_failed(request, *, error_type: str | None = None) -> None:
     if getattr(request.state, _ACTOR_SUBJECT_WARNING_STATE_KEY, False):
         return
-    security_logger().warning(
+    SECURITY_LOGGER.warning(
         "actor subject extraction failed",
         request_id=getattr(request.state, "request_id", None),
         path=getattr(getattr(request, "url", None), "path", None),
@@ -161,7 +139,7 @@ def record_request_observation(
 
     actor_subject = extract_actor_subject(request, runtime)
     if should_log_request:
-        request_logger().info(
+        REQUEST_LOGGER.info(
             "request",
             request_id=request_id,
             method=method,
@@ -172,7 +150,7 @@ def record_request_observation(
             actor=actor_subject,
         )
     if should_log_audit:
-        audit_logger().info(
+        AUDIT_LOGGER.info(
             "audit",
             request_id=request_id,
             method=method,

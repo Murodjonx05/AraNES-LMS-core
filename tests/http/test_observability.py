@@ -99,18 +99,6 @@ def test_record_request_observation_skips_actor_resolution_for_non_audited_path(
     assert calls["count"] == 0
 
 
-def test_needs_request_observation_matches_record_request_observation_gating():
-    runtime_off = SimpleNamespace(
-        config=SimpleNamespace(REQUEST_LOG_ENABLED=False, AUDIT_LOG_ENABLED=False),
-    )
-    runtime_audit = SimpleNamespace(
-        config=SimpleNamespace(REQUEST_LOG_ENABLED=False, AUDIT_LOG_ENABLED=True),
-    )
-    assert observability.needs_request_observation(runtime_off, "GET", "/api/v1/rbac/x") is False
-    assert observability.needs_request_observation(runtime_audit, "GET", "/api/v1/rbac/x") is False
-    assert observability.needs_request_observation(runtime_audit, "POST", "/api/v1/rbac/x") is True
-
-
 def test_record_request_observation_resolves_actor_for_audited_path(monkeypatch):
     request = _FakeRequest(authorization="Bearer token")
     calls = {"count": 0}
