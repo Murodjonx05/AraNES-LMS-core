@@ -12,6 +12,7 @@ class _FakeSecurity:
         self.get_access_token_calls = 0
         self.blocklist_checks = 0
         self.verify_token_calls = 0
+        self.raise_on_verify = False
 
     async def get_access_token_from_request(self, request, *, locations: list[str]):
         del request
@@ -26,6 +27,8 @@ class _FakeSecurity:
 
     def verify_token(self, token: RequestToken, **kwargs):
         self.verify_token_calls += 1
+        if self.raise_on_verify:
+            raise ValueError("invalid token")
         assert token.token == f"{self.name}-token"
         assert kwargs["verify_type"] is True
         assert kwargs["verify_fresh"] is False
@@ -102,3 +105,17 @@ async def test_get_cached_access_token_payload_is_cached_per_request():
     assert security.get_access_token_calls == 1
     assert security.blocklist_checks == 1
     assert security.verify_token_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_require_access_token_payload_skips_blocklist_for_invalid_token():
+    security = _FakeSecurity("auth")
+    security.raise_on_verify = True
+    request = _build_request(security)
+
+    with pytest.raises(ValueError, match="invalid token"):
+        await dependencies.require_access_token_payload(request)  # type: ignore[arg-type]
+
+    assert security.get_access_token_calls == 1
+    assert security.verify_token_calls == 1
+    assert security.blocklist_checks == 0

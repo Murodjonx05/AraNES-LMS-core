@@ -7,6 +7,7 @@ import hashlib
 import sqlite3
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -20,6 +21,9 @@ from fastapi import FastAPI
 TEST_JWT_SECRET = "test-secret-key-with-32-byte-minimum!!"
 TEST_CORS_ORIGIN = "http://testserver"
 TEST_PBKDF2_ITERATIONS = "1"
+TEST_ARGON2_TIME_COST = "1"
+TEST_ARGON2_MEMORY_COST = "1024"
+TEST_ARGON2_PARALLELISM = "1"
 TEST_RATE_LIMIT_ENABLED = "false"
 TEST_REDIS_ENABLED = "false"
 
@@ -32,10 +36,16 @@ def _get_test_env(name: str, default: str) -> str:
 
 
 TEST_PROFILING_ENABLED = "false"
-TEST_REQUEST_PROFILING_ENABLED = "true"
+TEST_REQUEST_PROFILING_ENABLED = "false"
 TEST_FUNCTION_PROFILING_ENABLED = "false"
 TEST_INTEGRATION_TEST_PROFILING_ENABLED = "false"
 TEST_PROFILE_LOG_DIR = _get_test_env("TEST_PROFILE_LOG_DIR", "")
+
+# Keep real Argon2 code paths active in integration tests, but at a much cheaper
+# test-only cost profile than the library defaults.
+os.environ.setdefault("ARGON2_TIME_COST", TEST_ARGON2_TIME_COST)
+os.environ.setdefault("ARGON2_MEMORY_COST", TEST_ARGON2_MEMORY_COST)
+os.environ.setdefault("ARGON2_PARALLELISM", TEST_ARGON2_PARALLELISM)
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -66,6 +76,33 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     from src.utils.profiler import flush_profile_writes
 
     flush_profile_writes()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _configure_integration_password_hash_profile():
+    from src.auth import passwords
+    from src.auth import service
+
+    original_values = {
+        "ARGON2_TIME_COST": os.environ.get("ARGON2_TIME_COST"),
+        "ARGON2_MEMORY_COST": os.environ.get("ARGON2_MEMORY_COST"),
+        "ARGON2_PARALLELISM": os.environ.get("ARGON2_PARALLELISM"),
+    }
+    os.environ["ARGON2_TIME_COST"] = TEST_ARGON2_TIME_COST
+    os.environ["ARGON2_MEMORY_COST"] = TEST_ARGON2_MEMORY_COST
+    os.environ["ARGON2_PARALLELISM"] = TEST_ARGON2_PARALLELISM
+    passwords._get_password_hasher.cache_clear()
+    service._get_password_hasher.cache_clear()
+    try:
+        yield
+    finally:
+        for env_name, value in original_values.items():
+            if value is None:
+                os.environ.pop(env_name, None)
+            else:
+                os.environ[env_name] = value
+        passwords._get_password_hasher.cache_clear()
+        service._get_password_hasher.cache_clear()
 
 
 def _integration_template_cache_key(repo_root: Path) -> str:
@@ -103,6 +140,50 @@ def _integration_template_cache_key(repo_root: Path) -> str:
 def _integration_template_cache_dir(repo_root: Path) -> Path:
     key = _integration_template_cache_key(repo_root)
     return repo_root / ".pytest_cache" / "integration_db_templates" / key
+
+
+def _runtime_config_for_database(base_config, database_url: str):
+    return replace(base_config, DATABASE_URL=database_url)
+
+
+async def create_user_tokens(
+    client: httpx.AsyncClient,
+    *,
+    username: str | None = None,
+    role_id: int,
+) -> dict[str, str | int]:
+    from src.auth.service import issue_access_token
+    from src.user_role.models import User
+
+    runtime = _runtime_from_client(client)
+    actual_username = username or f"user{uuid.uuid4().hex[:10]}"
+    async with runtime.session_factory() as session:
+        user = User(
+            username=actual_username,
+            # Password is unused in authorization/setup-oriented tests.
+            password="fixture-only",
+            role_id=role_id,
+            permissions={},
+        )
+        session.add(user)
+        await session.flush()
+        user_id = user.id
+        await session.commit()
+
+    assert isinstance(user_id, int) and user_id > 0
+    return {
+        "username": actual_username,
+        "user_id": user_id,
+        "access": issue_access_token(actual_username, user_id=user_id, security=runtime.security),
+    }
+
+
+@pytest.fixture
+def user_tokens_factory(client: httpx.AsyncClient):
+    async def _factory(*, username: str | None = None, role_id: int):
+        return await create_user_tokens(client, username=username, role_id=role_id)
+
+    return _factory
 
 
 def _has_superuser_seed(db_path: Path) -> bool:
@@ -175,7 +256,7 @@ def seeded_db_template(migrated_db_template: Path) -> Path:
     if seeded_db_path.exists():
         seeded_db_path.unlink()
     tmp_seeded_db_path = seeded_db_path.with_name(f"template-seeded.{uuid.uuid4().hex}.tmp.sqlite3")
-    shutil.copy2(migrated_db_template, tmp_seeded_db_path)
+    shutil.copyfile(migrated_db_template, tmp_seeded_db_path)
 
     os.environ["JWT_SECRET_KEY"] = TEST_JWT_SECRET
     os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{tmp_seeded_db_path}"
@@ -225,6 +306,8 @@ async def integration_app(
     Build FastAPI app once per session to avoid repeated router/middleware setup.
     Per-test fixtures swap app.state.runtime to keep DB isolation.
     """
+    import time
+    _start = time.perf_counter()
     os.environ["JWT_SECRET_KEY"] = TEST_JWT_SECRET
     os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{seeded_db_template}"
     os.environ["CORS_ALLOW_ORIGINS"] = TEST_CORS_ORIGIN
@@ -246,10 +329,14 @@ async def integration_app(
     from src.utils.inprocess_http import close_inprocess_http
 
     reset_default_runtime()
+    _build_start = time.perf_counter()
     runtime = build_runtime(build_app_config())
+    _create_start = time.perf_counter()
     app = create_app(runtime)
-    os.environ["APP_PROFILING_ENABLED"] = TEST_REQUEST_PROFILING_ENABLED
-    os.environ["APP_FUNCTION_PROFILING_ENABLED"] = TEST_FUNCTION_PROFILING_ENABLED
+    app.state.session_config = runtime.config
+    app.state.session_runtime = runtime
+
+    print(f"[DIAG] integration_app: build_runtime={(_build_start-_start)*1000:.1f}ms create_app={(_create_start-_build_start)*1000:.1f}ms total={(_create_start-_start)*1000:.1f}ms")
 
     try:
         yield app
@@ -262,38 +349,26 @@ async def integration_app(
 @pytest_asyncio.fixture
 async def client(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     seeded_db_template: Path,
     integration_app: FastAPI,
 ) -> AsyncIterator[httpx.AsyncClient]:
+    import time
+    _fixture_start = time.perf_counter()
     db_path = tmp_path / "integration.sqlite3"
-    shutil.copy2(seeded_db_template, db_path)
-
-    monkeypatch.setenv("JWT_SECRET_KEY", TEST_JWT_SECRET)
-    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
-    monkeypatch.setenv("CORS_ALLOW_ORIGINS", TEST_CORS_ORIGIN)
-    monkeypatch.setenv("CORS_ALLOW_CREDENTIALS", "false")
-    monkeypatch.setenv("PBKDF2_ITERATIONS", TEST_PBKDF2_ITERATIONS)
-    monkeypatch.setenv("APP_PROFILING_ENABLED", TEST_PROFILING_ENABLED)
-    monkeypatch.setenv("APP_FUNCTION_PROFILING_ENABLED", TEST_FUNCTION_PROFILING_ENABLED)
-    if TEST_PROFILE_LOG_DIR:
-        monkeypatch.setenv("APP_PROFILE_LOG_DIR", TEST_PROFILE_LOG_DIR)
-    monkeypatch.setenv("RATE_LIMIT_ENABLED", TEST_RATE_LIMIT_ENABLED)
-    monkeypatch.setenv("REDIS_ENABLED", TEST_REDIS_ENABLED)
-    # DB template is already seeded and includes the superuser.
-    monkeypatch.setenv("BOOTSTRAP_SUPERUSER_CREATE", "false")
-    monkeypatch.setenv("BOOTSTRAP_SUPERUSER_USERNAME", "superuser")
-    monkeypatch.setenv("BOOTSTRAP_SUPERUSER_PASSWORD", "superuser11")
+    shutil.copyfile(seeded_db_template, db_path)
+    _copy_time = time.perf_counter()
 
     from src.runtime import build_runtime, reset_default_runtime
-    from src.config import build_app_config
     from src.auth import dependencies as auth_dependencies
 
+    base_config = getattr(integration_app.state, "session_config", None)
+    assert base_config is not None
     reset_default_runtime()
-    runtime = build_runtime(build_app_config())
+    runtime = build_runtime(
+        _runtime_config_for_database(base_config, f"sqlite+aiosqlite:///{db_path}")
+    )
+    _runtime_time = time.perf_counter()
     integration_app.state.runtime = runtime
-    monkeypatch.setenv("APP_PROFILING_ENABLED", TEST_REQUEST_PROFILING_ENABLED)
-    monkeypatch.setenv("APP_FUNCTION_PROFILING_ENABLED", TEST_FUNCTION_PROFILING_ENABLED)
     if hasattr(integration_app.state, auth_dependencies._ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY):
         delattr(integration_app.state, auth_dependencies._ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY)
 
@@ -301,12 +376,15 @@ async def client(
         # Skip lifespan startup for per-test clients: template DB is already fully bootstrapped.
         transport = httpx.ASGITransport(app=integration_app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            _client_time = time.perf_counter()
             yield c
     finally:
         integration_app.state.runtime = None
         await runtime.cache_service.close()
         await runtime.engine.dispose()
         reset_default_runtime()
+    _total = time.perf_counter() - _fixture_start
+    print(f"[DIAG] client fixture: total={_total*1000:.1f}ms copy={(_copy_time-_fixture_start)*1000:.1f}ms runtime={(_runtime_time-_copy_time)*1000:.1f}ms client={(_client_time-_runtime_time)*1000:.1f}ms")
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -317,73 +395,54 @@ async def unauth_client(
     Shared client for unauthenticated/401 integration checks.
     Reuses the shared app/runtime because these tests do not mutate persistent state.
     """
+    import time
+    _start = time.perf_counter()
     transport = httpx.ASGITransport(app=integration_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
         yield c
+    print(f"[DIAG] unauth_client teardown: {(time.perf_counter() - _start)*1000:.1f}ms")
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(scope="session")
 async def superuser_tokens(integration_app: FastAPI) -> dict[str, str]:
     from src.auth.service import issue_access_token
+    from src.user_role.defaults import SUPERADMIN_ROLE_ID
 
-    runtime = integration_app.state.runtime
+    runtime = getattr(integration_app.state, "session_runtime", None)
     assert runtime is not None
-    return {"access": issue_access_token("superuser", security=runtime.security)}
+    return {
+        "username": "superuser",
+        "user_id": SUPERADMIN_ROLE_ID,
+        "access": issue_access_token("superuser", user_id=SUPERADMIN_ROLE_ID, security=runtime.security),
+    }
 
 
 @pytest_asyncio.fixture
-async def admin_tokens(integration_app: FastAPI) -> dict[str, str]:
-    from src.auth.service import issue_access_token
-    from src.user_role.models import User
-
-    runtime = integration_app.state.runtime
-    assert runtime is not None
-
-    username = f"admin{uuid.uuid4().hex[:10]}"
-    async with runtime.session_factory() as session:
-        user = User(
-            username=username,
-            # Password is unused in these authorization-only tests.
-            password="fixture-only",
-            role_id=2,
-            permissions={},
-        )
-        session.add(user)
-        await session.flush()
-        await session.commit()
-
-    return {"username": username, "access": issue_access_token(username, security=runtime.security)}
+async def admin_tokens(client: httpx.AsyncClient) -> dict[str, str]:
+    payload = await create_user_tokens(client, username=f"admin{uuid.uuid4().hex[:10]}", role_id=2)
+    return payload  # type: ignore[return-value]
 
 
 @pytest_asyncio.fixture
-async def regular_user_tokens(integration_app: FastAPI) -> dict[str, str]:
-    from src.auth.service import issue_access_token
-    from src.user_role.models import User
+async def regular_user_tokens(client: httpx.AsyncClient) -> dict[str, str]:
     from src.user_role.defaults import DEFAULT_SIGNUP_ROLE_ID
 
-    runtime = integration_app.state.runtime
-    assert runtime is not None
-
-    username = f"student{uuid.uuid4().hex[:10]}"
-    async with runtime.session_factory() as session:
-        user = User(
-            username=username,
-            # Password is unused in these authorization-only tests.
-            password="fixture-only",
-            role_id=DEFAULT_SIGNUP_ROLE_ID,
-            permissions={},
-        )
-        session.add(user)
-        await session.flush()
-        user_id = user.id
-        await session.commit()
-
-    return {
-        "username": username,
-        "access": issue_access_token(username, security=runtime.security),
-        "user_id": user_id,
-    }
+    payload = await create_user_tokens(
+        client,
+        username=f"student{uuid.uuid4().hex[:10]}",
+        role_id=DEFAULT_SIGNUP_ROLE_ID,
+    )
+    return payload  # type: ignore[return-value]
 
 
 def bearer_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _runtime_from_client(client: httpx.AsyncClient):
+    transport = getattr(client, "_transport", None)
+    app = getattr(transport, "app", None)
+    assert app is not None
+    runtime = getattr(app.state, "runtime", None)
+    assert runtime is not None
+    return runtime

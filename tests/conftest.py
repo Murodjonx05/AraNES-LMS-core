@@ -16,6 +16,8 @@ if project_root_str not in sys.path:
 
 # Keep password hashing realistic but significantly faster in tests.
 os.environ.setdefault("PBKDF2_ITERATIONS", "300")
+os.environ.setdefault("APP_PROFILING_ENABLED", "false")
+os.environ.setdefault("APP_FUNCTION_PROFILING_ENABLED", "false")
 
 
 class _TimingParts(TypedDict):
@@ -25,6 +27,7 @@ class _TimingParts(TypedDict):
 
 
 _TEST_TIMINGS: dict[str, _TimingParts] = {}
+_PROFILE_ENABLED = False
 
 _ANSI_RESET = "\033[0m"
 _ANSI_GREEN = "\033[32m"
@@ -48,7 +51,14 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    global _PROFILE_ENABLED
+    _PROFILE_ENABLED = bool(config.getoption("--profile"))
+
+
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    if not _PROFILE_ENABLED:
+        return
     if report.when not in {"setup", "call", "teardown"}:
         return
     timing = _TEST_TIMINGS.setdefault(
@@ -59,7 +69,7 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    if not session.config.getoption("--profile"):
+    if not _PROFILE_ENABLED:
         return
 
     terminal = session.config.pluginmanager.get_plugin("terminalreporter")

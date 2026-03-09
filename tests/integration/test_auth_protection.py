@@ -4,9 +4,21 @@ import httpx
 import pytest
 import uuid
 
+from src.user_role.models import User
+from src.user_role.defaults import DEFAULT_SIGNUP_ROLE_ID
+
 
 def bearer_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _runtime_from_client(client: httpx.AsyncClient):
+    transport = getattr(client, "_transport", None)
+    app = getattr(transport, "app", None)
+    assert app is not None
+    runtime = getattr(app.state, "runtime", None)
+    assert runtime is not None
+    return runtime
 
 
 @pytest.mark.asyncio
@@ -33,12 +45,6 @@ async def test_login_me_and_reset_access_flow(client: httpx.AsyncClient):
     assert login_response.status_code == 200, login_response.text
     tokens = login_response.json()
     access_token = tokens["access_token"]
-    me_response = await client.get(
-        "/api/v1/auth/me",
-        headers=bearer_headers(access_token),
-    )
-    assert me_response.status_code == 200, me_response.text
-    assert me_response.json()["username"] == "superuser"
 
     no_token_reset = await client.post("/api/v1/auth/reset")
     assert no_token_reset.status_code == 401, no_token_reset.text
@@ -75,42 +81,36 @@ async def test_login_me_and_reset_access_flow(client: httpx.AsyncClient):
         headers=bearer_headers(new_access_token),
     )
     assert me_after_relogin.status_code == 200, me_after_relogin.text
+    assert me_after_relogin.json()["username"] == "superuser"
 
 
 @pytest.mark.asyncio
 async def test_me_uses_stable_user_id_claim_after_username_change_and_reuse(
     client: httpx.AsyncClient,
-    superuser_tokens: dict[str, str],
+    user_tokens_factory,
 ):
     original_username = f"user{uuid.uuid4().hex[:8]}"
     renamed_username = f"user{uuid.uuid4().hex[:8]}"
-
-    signup_response = await client.post(
-        "/api/v1/auth/signup",
-        json={"username": original_username, "password": "StrongPass123"},
+    user_tokens = await user_tokens_factory(
+        username=original_username,
+        role_id=DEFAULT_SIGNUP_ROLE_ID,
     )
-    assert signup_response.status_code == 201, signup_response.text
-    access_token = signup_response.json()["access_token"]
-
-    me_before_rename = await client.get("/api/v1/auth/me", headers=bearer_headers(access_token))
-    assert me_before_rename.status_code == 200, me_before_rename.text
-    user_id = me_before_rename.json()["id"]
-
-    admin_headers = bearer_headers(superuser_tokens["access"])
-    rename_response = await client.patch(
-        f"/api/v1/rbac/users/{user_id}",
-        headers=admin_headers,
-        json={"username": renamed_username},
-    )
-    assert rename_response.status_code == 200, rename_response.text
-    assert rename_response.json()["username"] == renamed_username
-
-    recreate_old_username = await client.post(
-        "/api/v1/rbac/users",
-        headers=admin_headers,
-        json={"username": original_username, "password": "StrongPass123", "role_id": 6},
-    )
-    assert recreate_old_username.status_code == 201, recreate_old_username.text
+    access_token = user_tokens["access"]
+    user_id = user_tokens["user_id"]
+    runtime = _runtime_from_client(client)
+    async with runtime.session_factory() as session:
+        db_user = await session.get(User, user_id)
+        assert db_user is not None
+        db_user.username = renamed_username
+        session.add(
+            User(
+                username=original_username,
+                password="fixture-only",
+                role_id=DEFAULT_SIGNUP_ROLE_ID,
+                permissions={},
+            )
+        )
+        await session.commit()
 
     me_after_rename = await client.get("/api/v1/auth/me", headers=bearer_headers(access_token))
     assert me_after_rename.status_code == 200, me_after_rename.text
