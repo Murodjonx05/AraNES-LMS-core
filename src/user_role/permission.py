@@ -86,6 +86,16 @@ RBAC_ROLE_PERMISSION_DEFAULTS: dict[str, dict[str, bool]] = {
         RBAC_USERS_CREATE: False,
         RBAC_USERS_MANAGE: False,
     },
+    "PLUGIN": {
+        RBAC_CAN_MANAGE_PERMISSIONS: False,
+        RBAC_ROLES_READ: True,
+        RBAC_ROLES_CREATE: False,
+        RBAC_ROLES_UPDATE: False,
+        RBAC_ROLES_DELETE: False,
+        RBAC_USERS_READ: True,
+        RBAC_USERS_CREATE: False,
+        RBAC_USERS_MANAGE: False,
+    },
 }
 
 REGISTERED_PERMISSION_KEYS: frozenset[str] = frozenset(

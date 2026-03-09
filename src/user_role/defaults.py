@@ -7,14 +7,18 @@ USER_ROLE_TITLE_KEY = "role.user.title"
 GUEST_ROLE_TITLE_KEY = "role.guest.title"
 TEACHER_ROLE_TITLE_KEY = "role.teacher.title"
 STUDENT_ROLE_TITLE_KEY = "role.student.title"
+PLUGIN_ROLE_NAME = "PLUGIN"
+PLUGIN_ROLE_TITLE_KEY = "role.plugin.title"
 
-DEFAULT_ROLES: tuple[tuple[int, str, str], ...] = (
+DEFAULT_ROLES: tuple[tuple[int | None, str, str], ...] = (
     (SUPERADMIN_ROLE_ID, SUPERADMIN_ROLE_NAME, SUPERADMIN_ROLE_TITLE_KEY),
     (2, "Admin", ADMIN_ROLE_TITLE_KEY),
     (3, "User", USER_ROLE_TITLE_KEY),
     (4, "Guest", GUEST_ROLE_TITLE_KEY),
     (5, "Teacher", TEACHER_ROLE_TITLE_KEY),
     (6, "Student", STUDENT_ROLE_TITLE_KEY),
+    # New default roles should avoid fixed ids so existing custom-role ids cannot collide.
+    (None, PLUGIN_ROLE_NAME, PLUGIN_ROLE_TITLE_KEY),
 )
 
 DEFAULT_SIGNUP_ROLE_ID = 6

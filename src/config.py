@@ -122,7 +122,7 @@ class AppConfig:
     DATABASE_URL: str
     CORS: dict[str, Any]
     REQUIRED_LANGUAGES: tuple[str, ...]
-    DEFAULT_ROLES: tuple[tuple[int, str, str], ...]
+    DEFAULT_ROLES: tuple[tuple[int | None, str, str], ...]
     DEFAULT_SIGNUP_ROLE_ID: int
     DEFAULT_SIGNUP_ROLE_NAME: str
     DEFAULT_SIGNUP_ROLE_TITLE_KEY: str

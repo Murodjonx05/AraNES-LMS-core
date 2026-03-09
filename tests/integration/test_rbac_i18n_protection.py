@@ -116,18 +116,25 @@ async def test_mutating_protected_endpoints_require_token(
 
 
 @pytest.mark.asyncio
-async def test_authenticated_user_can_access_read_endpoints(
+async def test_authenticated_user_can_access_only_granted_read_endpoints(
     client: httpx.AsyncClient,
     regular_user_tokens: dict[str, str],
 ):
     headers = bearer_headers(regular_user_tokens["access"])
-    readable_paths = [
+    allowed_paths = [
         "/api/v1/i18n/small",
         "/api/v1/i18n/large",
+    ]
+    forbidden_paths = [
         "/api/v1/rbac/roles",
         "/api/v1/rbac/users",
     ]
-    for path in readable_paths:
+
+    for path in allowed_paths:
+        response = await client.get(path, headers=headers)
+        assert response.status_code == 200, f"{path}: {response.status_code} {response.text}"
+
+    for path in forbidden_paths:
         response = await client.get(path, headers=headers)
         assert response.status_code == 403, f"{path}: {response.status_code} {response.text}"
 

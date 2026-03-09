@@ -2,6 +2,7 @@ from src.i18n.translates import register_small_translates
 from src.user_role.defaults import (
     ADMIN_ROLE_TITLE_KEY,
     GUEST_ROLE_TITLE_KEY,
+    PLUGIN_ROLE_TITLE_KEY,
     STUDENT_ROLE_TITLE_KEY,
     SUPERADMIN_ROLE_TITLE_KEY,
     TEACHER_ROLE_TITLE_KEY,
@@ -38,6 +39,11 @@ ROLE_TITLE_TRANSLATES: dict[str, dict[str, str]] = {
         "en": "Student",
         "ru": "Студент",
         "uz": "Talaba",
+    },
+    PLUGIN_ROLE_TITLE_KEY: {
+        "en": "Plugin",
+        "ru": "Плагин",
+        "uz": "Plagin",
     },
 }
 
