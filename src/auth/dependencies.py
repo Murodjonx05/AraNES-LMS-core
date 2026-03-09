@@ -37,14 +37,15 @@ def _get_access_token_required_dependency(request: Request):
 
     async def dependency(inner_request: Request) -> Any:
         request_token = await get_request_access_token(inner_request)
-        if await security.is_token_in_blocklist(request_token.token):
-            raise RevokedTokenError("Token has been revoked")
-        return security.verify_token(
+        payload = security.verify_token(
             request_token,
             verify_type=True,
             verify_fresh=False,
             verify_csrf=False,
         )
+        if await security.is_token_in_blocklist(request_token.token):
+            raise RevokedTokenError("Token has been revoked")
+        return payload
 
     if app_state is not None:
         setattr(app_state, _ACCESS_TOKEN_REQUIRED_DEPENDENCY_STATE_KEY, dependency)

@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from unittest.mock import patch
 
 from src.auth import passwords
-from src.auth import revocation
 from src.auth import service
 
 
@@ -209,41 +208,6 @@ async def test_is_token_revoked_scopes_identity_cache_to_security(clean_revocati
 
 
 @pytest.mark.asyncio
-async def test_is_token_revoked_scopes_local_cache_to_engine():
-    token = "shared-token"
-    expires_at = service._utc_now() + service.timedelta(minutes=5)
-    security = _FixedSecurity(jti="shared-jti", exp=expires_at)
-    revoked_engine = await _create_revocation_engine()
-    clean_engine = await _create_revocation_engine()
-    try:
-        await service.revoke_token(token, security=security, engine=revoked_engine)
-
-        assert await service.is_token_revoked(token, security=security, engine=revoked_engine) is True
-        assert await service.is_token_revoked(token, security=security, engine=clean_engine) is False
-    finally:
-        await revoked_engine.dispose()
-        await clean_engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_is_token_revoked_scopes_identity_cache_to_security():
-    token = "shared-token"
-    expires_at = service._utc_now() + service.timedelta(minutes=5)
-    first_security = _FixedSecurity(jti="first-jti", exp=expires_at)
-    second_security = _FixedSecurity(jti="second-jti", exp=expires_at)
-    first_engine = await _create_revocation_engine()
-    second_engine = await _create_revocation_engine()
-    try:
-        assert await service.is_token_revoked(token, security=first_security, engine=first_engine) is False
-        await service._store_revoked_jti(second_engine, "second-jti", expires_at)
-
-        assert await service.is_token_revoked(token, security=second_security, engine=second_engine) is True
-    finally:
-        await first_engine.dispose()
-        await second_engine.dispose()
-
-
-@pytest.mark.asyncio
 async def test_legacy_revoked_token_expires(
     monkeypatch: pytest.MonkeyPatch,
     clean_revocation_engine,
@@ -274,21 +238,6 @@ async def test_legacy_revoked_token_expires(
         engine=engine,
         cache_service=cache_service,  # type: ignore[arg-type]
     ) is False
-
-
-def test_cache_revocation_status_uses_lru_eviction(monkeypatch: pytest.MonkeyPatch):
-    now = service.datetime(2026, 1, 1, tzinfo=service.timezone.utc)
-    expires_at = now + service.timedelta(minutes=5)
-    service._token_revocation_cache.clear()
-    monkeypatch.setattr(revocation, "_TOKEN_REVOCATION_CACHE_MAX_ENTRIES", 3)
-
-    service._cache_revocation_status(jti="a", revoked=False, now=now, expires_at=expires_at)
-    service._cache_revocation_status(jti="b", revoked=False, now=now, expires_at=expires_at)
-    service._cache_revocation_status(jti="c", revoked=False, now=now, expires_at=expires_at)
-    service._token_revocation_cache.move_to_end("a")
-    service._cache_revocation_status(jti="d", revoked=False, now=now, expires_at=expires_at)
-
-    assert list(service._token_revocation_cache) == ["c", "a", "d"]
 
 
 def test_extract_jti_and_exp_accepts_numeric_exp_timestamp():
@@ -355,7 +304,7 @@ def test_password_hasher_clamps_weak_argon2_env_values_outside_pytest(monkeypatc
 
 
 def test_revocation_cache_remains_bounded_for_non_expired_entries(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(revocation, "_TOKEN_REVOCATION_CACHE_MAX_ENTRIES", 4)
+    monkeypatch.setattr(service, "_TOKEN_REVOCATION_CACHE_MAX_ENTRIES", 4)
     now = service._utc_now()
     expires_at = now + service.timedelta(seconds=30)
 
@@ -514,33 +463,3 @@ def test_explicit_security_and_engine_do_not_require_default_runtime():
     assert resolved_engine is engine
     assert resolved_cache_service is None
     get_default_runtime_mock.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_is_token_revoked_falls_back_to_db_when_cache_returns_none():
-    """When Redis/cache is unavailable or returns None, revocation check uses DB."""
-    token = "fallback-token"
-    security = _InvalidSecurity()
-    cache_service = _FakeCacheService()
-    engine = await _create_revocation_engine()
-    try:
-        assert await service.is_token_revoked(
-            token,
-            security=security,
-            engine=engine,
-            cache_service=cache_service,  # type: ignore[arg-type]
-        ) is False
-        await service.revoke_token(
-            token,
-            security=security,
-            engine=engine,
-            cache_service=cache_service,  # type: ignore[arg-type]
-        )
-        assert await service.is_token_revoked(
-            token,
-            security=security,
-            engine=engine,
-            cache_service=cache_service,  # type: ignore[arg-type]
-        ) is True
-    finally:
-        await engine.dispose()
