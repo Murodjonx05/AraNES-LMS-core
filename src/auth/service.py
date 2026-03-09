@@ -40,6 +40,8 @@ from src.runtime import get_default_runtime
 from src.utils.cache import RedisCacheService
 
 _TOKEN_REVOCATION_CACHE_MAX_ENTRIES = _REVOCATION_CACHE_LIMIT
+_REVOCATION_EXPIRY_CLEANUP_INTERVAL = timedelta(minutes=1)
+_revocation_cleanup_due_at: dict[int, datetime] = {}
 
 
 def _resolve_security_and_engine(
@@ -59,12 +61,23 @@ def _resolve_security_and_engine(
     )
 
 
+def _should_cleanup_expired_revocations(*, engine: AsyncEngine, now: datetime) -> bool:
+    engine_key = id(engine)
+    due_at = _revocation_cleanup_due_at.get(engine_key)
+    if due_at is not None and due_at > now:
+        return False
+    _revocation_cleanup_due_at[engine_key] = now + _REVOCATION_EXPIRY_CLEANUP_INTERVAL
+    return True
+
+
 async def _store_revoked_jti(engine: AsyncEngine, jti: str, expires_at: datetime) -> None:
+    now = _utc_now()
     expires_at = _normalize_expiry(expires_at)
     async with engine.begin() as conn:
-        await conn.execute(
-            delete(_revoked_token_jtis).where(_revoked_token_jtis.c.expires_at <= _utc_now())
-        )
+        if _should_cleanup_expired_revocations(engine=engine, now=now):
+            await conn.execute(
+                delete(_revoked_token_jtis).where(_revoked_token_jtis.c.expires_at <= now)
+            )
         await conn.execute(delete(_revoked_token_jtis).where(_revoked_token_jtis.c.jti == jti))
         await conn.execute(_revoked_token_jtis.insert().values(jti=jti, expires_at=expires_at))
 
@@ -229,6 +242,7 @@ __all__ = [
     "PBKDF2_ITERATIONS_ENV",
     "PBKDF2_SCHEME_NAME",
     "_TOKEN_REVOCATION_CACHE_MAX_ENTRIES",
+    "_REVOCATION_EXPIRY_CLEANUP_INTERVAL",
     "_build_local_revocation_cache_key",
     "_build_raw_token_revocation_key",
     "_build_revocation_cache_key",
@@ -242,9 +256,11 @@ __all__ = [
     "_pbkdf2_hex_digest",
     "_resolve_revocation_identity",
     "_resolve_security_and_engine",
+    "_revocation_cleanup_due_at",
     "_revocation_metadata",
     "_revoked_token_jtis",
     "_set_cached_revocation_status",
+    "_should_cleanup_expired_revocations",
     "_store_revoked_jti",
     "_token_identity_cache",
     "_token_revocation_cache",

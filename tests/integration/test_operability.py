@@ -8,6 +8,8 @@ import uuid
 
 import httpx
 import pytest
+from src.user_role.models import User
+from src.user_role.defaults import DEFAULT_SIGNUP_ROLE_ID
 
 
 @pytest.mark.asyncio
@@ -281,41 +283,32 @@ async def test_mutating_endpoint_emits_request_id_and_audit_log(
 @pytest.mark.asyncio
 async def test_audit_log_uses_stable_uid_after_username_rename_and_reuse(
     client: httpx.AsyncClient,
-    superuser_tokens: dict[str, str],
     caplog: pytest.LogCaptureFixture,
+    user_tokens_factory,
 ):
     caplog.set_level(logging.INFO, logger="aranes.audit")
     original_username = f"user{uuid.uuid4().hex[:8]}"
     renamed_username = f"user{uuid.uuid4().hex[:8]}"
-
-    signup_response = await client.post(
-        "/api/v1/auth/signup",
-        json={"username": original_username, "password": "StrongPass123"},
+    user_tokens = await user_tokens_factory(
+        username=original_username,
+        role_id=DEFAULT_SIGNUP_ROLE_ID,
     )
-    assert signup_response.status_code == 201, signup_response.text
-    access_token = signup_response.json()["access_token"]
-
-    me_response = await client.get(
-        "/api/v1/auth/me",
-        headers={"Authorization": f"Bearer {access_token}"},
-    )
-    assert me_response.status_code == 200, me_response.text
-    user_id = me_response.json()["id"]
-
-    admin_headers = {"Authorization": f"Bearer {superuser_tokens['access']}"}
-    rename_response = await client.patch(
-        f"/api/v1/rbac/users/{user_id}",
-        headers=admin_headers,
-        json={"username": renamed_username},
-    )
-    assert rename_response.status_code == 200, rename_response.text
-
-    recreate_response = await client.post(
-        "/api/v1/rbac/users",
-        headers=admin_headers,
-        json={"username": original_username, "password": "StrongPass123", "role_id": 6},
-    )
-    assert recreate_response.status_code == 201, recreate_response.text
+    access_token = user_tokens["access"]
+    user_id = user_tokens["user_id"]
+    runtime = _get_runtime(client)
+    async with runtime.session_factory() as session:
+        db_user = await session.get(User, user_id)
+        assert db_user is not None
+        db_user.username = renamed_username
+        session.add(
+            User(
+                username=original_username,
+                password="fixture-only",
+                role_id=DEFAULT_SIGNUP_ROLE_ID,
+                permissions={},
+            )
+        )
+        await session.commit()
 
     caplog.clear()
     reset_response = await client.post(
@@ -335,12 +328,12 @@ async def test_audit_log_uses_stable_uid_after_username_rename_and_reuse(
 
 @pytest.mark.asyncio
 async def test_invalid_bearer_token_is_logged_for_actor_extraction(
-    client: httpx.AsyncClient,
+    unauth_client: httpx.AsyncClient,
     caplog: pytest.LogCaptureFixture,
 ):
     caplog.set_level(logging.WARNING, logger="aranes.security")
 
-    response = await client.post(
+    response = await unauth_client.post(
         "/api/v1/rbac/users/reset",
         headers={"Authorization": "Bearer definitely-not-a-jwt", "X-Request-ID": "bad-token-test"},
     )

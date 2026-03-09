@@ -134,18 +134,12 @@ async def test_authenticated_user_can_access_read_endpoints(
 
 @pytest.mark.asyncio
 async def test_bootstrap_seeds_default_role_title_translations(
-    unauth_client: httpx.AsyncClient,
+    client: httpx.AsyncClient,
+    superuser_tokens: dict[str, str],
 ):
-    login_response = await unauth_client.post(
-        "/api/v1/auth/login",
-        json={"username": "superuser", "password": "superuser11"},
-    )
-    assert login_response.status_code == 200, login_response.text
-    access_token = login_response.json()["access_token"]
-
-    response = await unauth_client.get(
+    response = await client.get(
         "/api/v1/i18n/small/role.super_admin.title",
-        headers=bearer_headers(access_token),
+        headers=bearer_headers(superuser_tokens["access"]),
     )
     assert response.status_code == 200, response.text
     payload = response.json()

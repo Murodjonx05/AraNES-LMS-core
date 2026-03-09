@@ -1,8 +1,14 @@
+from pathlib import Path
+import os
+import tempfile
+
 import pytest
+import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import create_async_engine
 from unittest.mock import patch
 
+from src.auth import passwords
 from src.auth import service
 
 
@@ -10,9 +16,37 @@ from src.auth import service
 def _reset_auth_service_caches():
     service._token_revocation_cache.clear()
     service._token_identity_cache.clear()
+    service._revocation_cleanup_due_at.clear()
     yield
     service._token_revocation_cache.clear()
     service._token_identity_cache.clear()
+    service._revocation_cleanup_due_at.clear()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _cheap_auth_service_hash_profile():
+    from src.auth import passwords as password_module
+
+    original_values = {
+        "ARGON2_TIME_COST": os.environ.get("ARGON2_TIME_COST"),
+        "ARGON2_MEMORY_COST": os.environ.get("ARGON2_MEMORY_COST"),
+        "ARGON2_PARALLELISM": os.environ.get("ARGON2_PARALLELISM"),
+    }
+    os.environ["ARGON2_TIME_COST"] = "1"
+    os.environ["ARGON2_MEMORY_COST"] = "1024"
+    os.environ["ARGON2_PARALLELISM"] = "1"
+    password_module._get_password_hasher.cache_clear()
+    service._get_password_hasher.cache_clear()
+    try:
+        yield
+    finally:
+        for env_name, value in original_values.items():
+            if value is None:
+                os.environ.pop(env_name, None)
+            else:
+                os.environ[env_name] = value
+        password_module._get_password_hasher.cache_clear()
+        service._get_password_hasher.cache_clear()
 
 
 class _InvalidSecurity:
@@ -57,11 +91,32 @@ class _FakeCacheService:
         self.values.pop(key, None)
 
 
-async def _create_revocation_engine():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+async def _create_revocation_engine(database_path: Path | None = None):
+    if database_path is None:
+        database_path = Path(tempfile.mkstemp(prefix="auth-service-", suffix=".sqlite3")[1])
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
     async with engine.begin() as conn:
         await conn.run_sync(service._revocation_metadata.create_all)
     return engine
+
+
+@pytest_asyncio.fixture(scope="module")
+async def revocation_engine(tmp_path_factory: pytest.TempPathFactory):
+    database_path = tmp_path_factory.mktemp("auth-service") / "revocation.sqlite3"
+    engine = await _create_revocation_engine(database_path)
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def clean_revocation_engine(revocation_engine):
+    async with revocation_engine.begin() as conn:
+        await conn.execute(service._revoked_token_jtis.delete())
+    yield revocation_engine
+    async with revocation_engine.begin() as conn:
+        await conn.execute(service._revoked_token_jtis.delete())
 
 
 def test_hash_and_verify_password_roundtrip():
@@ -92,40 +147,37 @@ def test_verify_password_rejects_legacy_pbkdf2_hash_with_non_positive_iterations
 
 
 @pytest.mark.asyncio
-async def test_revoke_token_marks_token_as_revoked():
+async def test_revoke_token_marks_token_as_revoked(clean_revocation_engine):
     token = "token-abc"
     security = _InvalidSecurity()
     cache_service = _FakeCacheService()
-    engine = await _create_revocation_engine()
-    try:
-        assert await service.is_token_revoked(
-            token,
-            security=security,
-            engine=engine,
-            cache_service=cache_service,  # type: ignore[arg-type]
-        ) is False
-        await service.revoke_token(
-            token,
-            security=security,
-            engine=engine,
-            cache_service=cache_service,  # type: ignore[arg-type]
-        )
-        assert await service.is_token_revoked(
-            token,
-            security=security,
-            engine=engine,
-            cache_service=cache_service,  # type: ignore[arg-type]
-        ) is True
-    finally:
-        await engine.dispose()
+    engine = clean_revocation_engine
+    assert await service.is_token_revoked(
+        token,
+        security=security,
+        engine=engine,
+        cache_service=cache_service,  # type: ignore[arg-type]
+    ) is False
+    await service.revoke_token(
+        token,
+        security=security,
+        engine=engine,
+        cache_service=cache_service,  # type: ignore[arg-type]
+    )
+    assert await service.is_token_revoked(
+        token,
+        security=security,
+        engine=engine,
+        cache_service=cache_service,  # type: ignore[arg-type]
+    ) is True
 
 
 @pytest.mark.asyncio
-async def test_is_token_revoked_scopes_local_cache_to_engine():
+async def test_is_token_revoked_scopes_local_cache_to_engine(clean_revocation_engine):
     token = "shared-token"
     expires_at = service._utc_now() + service.timedelta(minutes=5)
     security = _FixedSecurity(jti="shared-jti", exp=expires_at)
-    revoked_engine = await _create_revocation_engine()
+    revoked_engine = clean_revocation_engine
     clean_engine = await _create_revocation_engine()
     try:
         await service.revoke_token(token, security=security, engine=revoked_engine)
@@ -138,12 +190,12 @@ async def test_is_token_revoked_scopes_local_cache_to_engine():
 
 
 @pytest.mark.asyncio
-async def test_is_token_revoked_scopes_identity_cache_to_security():
+async def test_is_token_revoked_scopes_identity_cache_to_security(clean_revocation_engine):
     token = "shared-token"
     expires_at = service._utc_now() + service.timedelta(minutes=5)
     first_security = _FixedSecurity(jti="first-jti", exp=expires_at)
     second_security = _FixedSecurity(jti="second-jti", exp=expires_at)
-    first_engine = await _create_revocation_engine()
+    first_engine = clean_revocation_engine
     second_engine = await _create_revocation_engine()
     try:
         assert await service.is_token_revoked(token, security=first_security, engine=first_engine) is False
@@ -158,6 +210,7 @@ async def test_is_token_revoked_scopes_identity_cache_to_security():
 @pytest.mark.asyncio
 async def test_legacy_revoked_token_expires(
     monkeypatch: pytest.MonkeyPatch,
+    clean_revocation_engine,
 ):
     issued_at = service.datetime(2026, 1, 1, tzinfo=service.timezone.utc)
     expiry_check_at = issued_at + service.FALLBACK_RAW_TOKEN_TTL + service.timedelta(seconds=1)
@@ -165,29 +218,26 @@ async def test_legacy_revoked_token_expires(
     monkeypatch.setattr(service, "_utc_now", lambda: current_now["value"])
     security = _InvalidSecurity()
     cache_service = _FakeCacheService()
-    engine = await _create_revocation_engine()
-    try:
-        await service.revoke_token(
-            "legacy-token",
-            security=security,
-            engine=engine,
-            cache_service=cache_service,  # type: ignore[arg-type]
-        )
-        assert await service.is_token_revoked(
-            "legacy-token",
-            security=security,
-            engine=engine,
-            cache_service=cache_service,  # type: ignore[arg-type]
-        ) is True
-        current_now["value"] = expiry_check_at
-        assert await service.is_token_revoked(
-            "legacy-token",
-            security=security,
-            engine=engine,
-            cache_service=cache_service,  # type: ignore[arg-type]
-        ) is False
-    finally:
-        await engine.dispose()
+    engine = clean_revocation_engine
+    await service.revoke_token(
+        "legacy-token",
+        security=security,
+        engine=engine,
+        cache_service=cache_service,  # type: ignore[arg-type]
+    )
+    assert await service.is_token_revoked(
+        "legacy-token",
+        security=security,
+        engine=engine,
+        cache_service=cache_service,  # type: ignore[arg-type]
+    ) is True
+    current_now["value"] = expiry_check_at
+    assert await service.is_token_revoked(
+        "legacy-token",
+        security=security,
+        engine=engine,
+        cache_service=cache_service,  # type: ignore[arg-type]
+    ) is False
 
 
 def test_extract_jti_and_exp_accepts_numeric_exp_timestamp():
@@ -246,10 +296,11 @@ def test_password_hasher_clamps_weak_argon2_env_values_outside_pytest(monkeypatc
     monkeypatch.setenv("ARGON2_MEMORY_COST", "1024")
     monkeypatch.setenv("ARGON2_PARALLELISM", "0")
 
-    hashed = service.hash_password("StrongPass123")
+    hasher = service._get_password_hasher().current_hasher._hasher
 
-    assert hashed.startswith("$argon2")
-    assert service.verify_password("StrongPass123", hashed) is True
+    assert hasher.time_cost == passwords._ARGON2_MIN_TIME_COST
+    assert hasher.memory_cost == passwords._ARGON2_MIN_MEMORY_COST
+    assert hasher.parallelism == passwords._ARGON2_MIN_PARALLELISM
 
 
 def test_revocation_cache_remains_bounded_for_non_expired_entries(monkeypatch: pytest.MonkeyPatch):
@@ -299,34 +350,43 @@ async def test_shared_revocation_cache_helpers_roundtrip():
 
 
 @pytest.mark.asyncio
-async def test_store_revoked_jti_upserts_and_cleans_expired_rows():
-    engine = await _create_revocation_engine()
-    expired_at = service._utc_now() - service.timedelta(seconds=5)
-    fresh_expiry = service._utc_now() + service.timedelta(minutes=5)
+async def test_store_revoked_jti_upserts_and_cleans_expired_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    clean_revocation_engine,
+):
+    engine = clean_revocation_engine
+    now = service.datetime(2026, 1, 1, tzinfo=service.timezone.utc)
+    current_now = {"value": now}
+    monkeypatch.setattr(service, "_utc_now", lambda: current_now["value"])
+    monkeypatch.setattr(service, "_REVOCATION_EXPIRY_CLEANUP_INTERVAL", service.timedelta(seconds=30))
+
+    expired_at = now - service.timedelta(seconds=5)
+    fresh_expiry = now + service.timedelta(minutes=5)
     updated_expiry = fresh_expiry + service.timedelta(minutes=5)
-    try:
-        await service._store_revoked_jti(engine, "expired-jti", expired_at)
-        await service._store_revoked_jti(engine, "live-jti", fresh_expiry)
-        await service._store_revoked_jti(engine, "live-jti", updated_expiry)
+    await service._store_revoked_jti(engine, "expired-jti", expired_at)
+    current_now["value"] = now + service.timedelta(seconds=31)
+    await service._store_revoked_jti(engine, "live-jti", fresh_expiry)
+    await service._store_revoked_jti(engine, "live-jti", updated_expiry)
 
-        async with engine.connect() as conn:
-            count = await conn.scalar(select(func.count()).select_from(service._revoked_token_jtis))
-            expiry = await conn.scalar(
-                select(service._revoked_token_jtis.c.expires_at).where(
-                    service._revoked_token_jtis.c.jti == "live-jti"
-                )
+    async with engine.connect() as conn:
+        count = await conn.scalar(select(func.count()).select_from(service._revoked_token_jtis))
+        expiry = await conn.scalar(
+            select(service._revoked_token_jtis.c.expires_at).where(
+                service._revoked_token_jtis.c.jti == "live-jti"
             )
+        )
 
-        assert count == 1
-        assert expiry is not None
-        assert service._normalize_expiry(expiry) == service._normalize_expiry(updated_expiry)
-    finally:
-        await engine.dispose()
+    assert count == 1
+    assert expiry is not None
+    assert service._normalize_expiry(expiry) == service._normalize_expiry(updated_expiry)
 
 
 @pytest.mark.asyncio
-async def test_store_revoked_jti_uses_portable_delete_then_insert(monkeypatch: pytest.MonkeyPatch):
-    engine = await _create_revocation_engine()
+async def test_store_revoked_jti_uses_portable_delete_then_insert(
+    monkeypatch: pytest.MonkeyPatch,
+    clean_revocation_engine,
+):
+    engine = clean_revocation_engine
     deleted_jtis: list[str] = []
     original_delete = service.delete
 
@@ -344,12 +404,49 @@ async def test_store_revoked_jti_uses_portable_delete_then_insert(monkeypatch: p
         return _DeleteProxy()
 
     monkeypatch.setattr(service, "delete", _tracking_delete)
-    try:
-        await service._store_revoked_jti(engine, "portable-jti", service._utc_now() + service.timedelta(minutes=1))
-    finally:
-        await engine.dispose()
+    await service._store_revoked_jti(
+        engine,
+        "portable-jti",
+        service._utc_now() + service.timedelta(minutes=1),
+    )
 
     assert "portable-jti" in deleted_jtis
+
+
+@pytest.mark.asyncio
+async def test_store_revoked_jti_throttles_expired_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    clean_revocation_engine,
+):
+    engine = clean_revocation_engine
+    now = service.datetime(2026, 1, 1, tzinfo=service.timezone.utc)
+    current_now = {"value": now}
+    expired_cleanup_calls = 0
+    original_delete = service.delete
+
+    def _tracking_delete(table):
+        statement = original_delete(table)
+
+        class _DeleteProxy:
+            def where(self, clause):
+                nonlocal expired_cleanup_calls
+                left = getattr(clause, "left", None)
+                if getattr(left, "name", None) == "expires_at":
+                    expired_cleanup_calls += 1
+                return statement.where(clause)
+
+        return _DeleteProxy()
+
+    monkeypatch.setattr(service, "_utc_now", lambda: current_now["value"])
+    monkeypatch.setattr(service, "_REVOCATION_EXPIRY_CLEANUP_INTERVAL", service.timedelta(seconds=30))
+    monkeypatch.setattr(service, "delete", _tracking_delete)
+
+    await service._store_revoked_jti(engine, "first-jti", now + service.timedelta(minutes=5))
+    await service._store_revoked_jti(engine, "second-jti", now + service.timedelta(minutes=5))
+    current_now["value"] = now + service.timedelta(seconds=31)
+    await service._store_revoked_jti(engine, "third-jti", now + service.timedelta(minutes=5))
+
+    assert expired_cleanup_calls == 2
 
 
 def test_explicit_security_and_engine_do_not_require_default_runtime():
