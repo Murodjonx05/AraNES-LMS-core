@@ -279,6 +279,7 @@ Seeded roles:
 - `Guest`
 - `Teacher`
 - `Student`
+- `PLUGIN`
 
 Default signup role:
 

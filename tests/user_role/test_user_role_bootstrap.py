@@ -3,9 +3,11 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from src.i18n.permission import I18N_CAN_READ_SMALL
 from src.user_role import bootstrap
-from src.user_role.defaults import DEFAULT_ROLES
-from src.user_role.permission import RBACService
+from src.user_role.defaults import DEFAULT_ROLES, PLUGIN_ROLE_NAME, PLUGIN_ROLE_TITLE_KEY
+from src.user_role.permission import RBACService, RBAC_ROLES_READ
+from src.user_role.translates import ROLE_TITLE_TRANSLATES
 
 
 class _ScalarResult:
@@ -118,6 +120,35 @@ async def test_seed_roles_if_missing_queries_only_default_role_candidates(monkey
     assert "roles.id IN" in sql
     assert "roles.name IN" in sql
     init_permissions_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_seed_roles_if_missing_creates_plugin_as_name_based_default_role(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=_ScalarResult([])),
+        add_all=Mock(),
+        add=Mock(),
+        dirty=False,
+        commit=AsyncMock(),
+    )
+    init_permissions_mock = AsyncMock()
+    monkeypatch.setattr(bootstrap.RBAC_SERVICE, "init_role_permissions_if_missing", init_permissions_mock)
+
+    created = await bootstrap.seed_roles_if_missing(session, commit=False)
+
+    assert created == len(DEFAULT_ROLES)
+    added_roles = session.add_all.call_args.args[0]
+    plugin_role = next(role for role in added_roles if role.name == PLUGIN_ROLE_NAME)
+    assert plugin_role.id is None
+    assert plugin_role.title_key == PLUGIN_ROLE_TITLE_KEY
+    assert plugin_role.permissions[RBAC_ROLES_READ] is True
+    assert plugin_role.permissions[I18N_CAN_READ_SMALL] is True
+
+
+def test_role_title_translates_include_plugin():
+    assert ROLE_TITLE_TRANSLATES[PLUGIN_ROLE_TITLE_KEY]["en"] == "Plugin"
 
 
 @pytest.mark.asyncio
