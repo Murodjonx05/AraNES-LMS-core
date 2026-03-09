@@ -19,17 +19,20 @@ RBAC_SERVICE = RBACService(
         for _, role_name, _ in DEFAULT_ROLES
     }
 )
-_DEFAULT_ROLE_IDS = tuple(role_id for role_id, _, _ in DEFAULT_ROLES)
+_DEFAULT_ROLE_IDS = tuple(role_id for role_id, _, _ in DEFAULT_ROLES if role_id is not None)
 _DEFAULT_ROLE_NAMES = tuple(role_name for _, role_name, _ in DEFAULT_ROLES)
 
 
 def _resolve_default_role_match(
     *,
-    role_id: int,
+    role_id: int | None,
     role_name: str,
     by_id: dict[int, object],
     by_name: dict[str, object],
 ):
+    if role_id is None:
+        return by_name.get(role_name)
+
     existing_by_id = by_id.get(role_id)
     existing_by_name = by_name.get(role_name)
 
@@ -98,12 +101,17 @@ async def seed_roles_if_missing(session: AsyncSession, *, commit: bool = True) -
                 roles_to_update.append(existing)
             continue
 
+        role_kwargs = {
+            "name": role_name,
+            "title_key": role_title_key,
+            "permissions": RBAC_SERVICE.get_default_role_permissions(role_name),
+        }
+        if role_id is not None:
+            role_kwargs["id"] = role_id
+
         roles_to_add.append(
             Role(
-                id=role_id,
-                name=role_name,
-                title_key=role_title_key,
-                permissions=RBAC_SERVICE.get_default_role_permissions(role_name),
+                **role_kwargs,
             )
         )
         created += 1
