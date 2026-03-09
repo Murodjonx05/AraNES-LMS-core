@@ -20,6 +20,10 @@ def get_security_from_request(request: Request):
     return get_runtime_from_request(request).security
 
 
+def peek_cached_access_token_payload(request: Request) -> Any:
+    return getattr(request.state, _ACCESS_TOKEN_PAYLOAD_STATE_KEY, None)
+
+
 def _get_access_token_required_dependency(request: Request):
     app_state = getattr(request.app, "state", None)
     if app_state is not None and (

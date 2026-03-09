@@ -44,12 +44,16 @@ class RedisCacheService:
     _heartbeat_task: asyncio.Task | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
-        if not self.enabled or Redis is None:
+        if not self.enabled:
+            return
+        if Redis is None:
+            _CACHE_LOGGER.warning("redis_client_unavailable", reason="redis_package_missing")
             self.enabled = False
             return
         try:
             self.client = Redis.from_url(self.redis_url, decode_responses=True)
         except Exception:
+            _CACHE_LOGGER.warning("redis_client_unavailable", redis_url=self.redis_url)
             self.enabled = False
             self.client = None
 

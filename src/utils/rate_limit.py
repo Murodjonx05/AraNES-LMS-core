@@ -48,12 +48,17 @@ class _KeyedBucketFactory(BucketFactory):
         )
         cache_service = runtime.cache_service
         if cache_service.enabled and cache_service.client is not None:
-            bootstrap_bucket = await RedisBucket.init(
-                [rate],
-                cache_service.client,
-                f"{_RATE_LIMIT_BUCKET_NAMESPACE}:bootstrap",
-            )
-            return cls(rate=rate, cache_service=cache_service, script_hash=bootstrap_bucket.script_hash)
+            try:
+                bootstrap_bucket = await RedisBucket.init(
+                    [rate],
+                    cache_service.client,
+                    f"{_RATE_LIMIT_BUCKET_NAMESPACE}:bootstrap",
+                )
+            except Exception:
+                cache_service.mark_unavailable()
+                _OPERABILITY_LOGGER.warning("rate limiter redis bootstrap failed; using in-memory backend")
+            else:
+                return cls(rate=rate, cache_service=cache_service, script_hash=bootstrap_bucket.script_hash)
         return cls(rate=rate)
 
     def wrap_item(self, name: str, weight: int = 1) -> RateItem:
@@ -100,12 +105,23 @@ def _runtime_signature(runtime: RuntimeContext) -> tuple[object, ...]:
         runtime.config.RATE_LIMIT_MAX_REQUESTS,
         runtime.config.RATE_LIMIT_WINDOW_SECONDS,
         runtime.cache_service.enabled,
+        runtime.cache_service.is_available(),
         id(runtime.cache_service.client),
     )
 
 
 async def _build_dependency_state(runtime: RuntimeContext) -> _RateLimitDependencyState:
-    factory = await _KeyedBucketFactory.create_for_runtime(runtime)
+    try:
+        factory = await _KeyedBucketFactory.create_for_runtime(runtime)
+    except Exception:
+        runtime.cache_service.mark_unavailable()
+        _OPERABILITY_LOGGER.warning("rate limiter falling back to in-memory backend")
+        factory = _KeyedBucketFactory(
+            rate=Rate(
+                runtime.config.RATE_LIMIT_MAX_REQUESTS,
+                Duration.SECOND * runtime.config.RATE_LIMIT_WINDOW_SECONDS,
+            )
+        )
     dependency = FastAPIRateLimiter(
         limiter=Limiter(factory),
         identifier=default_identifier,

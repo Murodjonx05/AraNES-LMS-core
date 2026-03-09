@@ -7,6 +7,7 @@ from sqlalchemy.orm import load_only
 
 from src.auth.exceptions import UsernameAlreadyExistsError
 from src.auth.service import hash_password
+from src.database import is_unique_violation
 from src.user_role.defaults import SUPERADMIN_ROLE_ID, SUPERADMIN_ROLE_NAME
 from src.user_role.exceptions import (
     DuplicatePermissionKeysError,
@@ -20,6 +21,18 @@ from src.user_role.models import Role, User
 from src.user_role.permission import validate_permission_patch
 
 PermissionPatch = dict[str, bool]
+_ROLE_NAME_UNIQUE_IDENTIFIERS = (
+    "roles.name",
+    "roles_name_key",
+    "key 'name'",
+    "for key 'name'",
+)
+_USERNAME_UNIQUE_IDENTIFIERS = (
+    "users.username",
+    "users_username_key",
+    "key 'username'",
+    "for key 'username'",
+)
 
 
 @dataclass(slots=True)
@@ -56,7 +69,7 @@ async def list_roles(session: AsyncSession) -> list[Role]:
     result = await session.execute(
         select(Role).options(
             load_only(Role.id, Role.name, Role.title_key, Role.permissions)
-        )
+        ).order_by(Role.id)
     )
     return list(result.scalars().all())
 
@@ -80,8 +93,7 @@ async def create_role(
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
-        message = str(getattr(exc, "orig", exc)).lower()
-        if "unique constraint failed" in message and "roles.name" in message:
+        if is_unique_violation(exc, identifiers=_ROLE_NAME_UNIQUE_IDENTIFIERS):
             raise RoleAlreadyExistsError("Role with this name already exists") from exc
         raise
     return db_role
@@ -107,8 +119,7 @@ async def update_role(
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
-        message = str(getattr(exc, "orig", exc)).lower()
-        if "unique constraint failed" in message and "roles.name" in message:
+        if is_unique_violation(exc, identifiers=_ROLE_NAME_UNIQUE_IDENTIFIERS):
             raise RoleAlreadyExistsError("Role with this name already exists") from exc
         raise
     return db_role
@@ -164,7 +175,9 @@ async def reset_role_permissions(session: AsyncSession) -> int:
 # Users CRUD
 async def list_users(session: AsyncSession) -> list[User]:
     result = await session.execute(
-        select(User).options(load_only(User.id, User.username, User.role_id, User.permissions))
+        select(User)
+        .options(load_only(User.id, User.username, User.role_id, User.permissions))
+        .order_by(User.id)
     )
     return list(result.scalars().all())
 
@@ -200,8 +213,7 @@ async def create_user_admin(
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
-        message = str(getattr(exc, "orig", exc)).lower()
-        if "unique constraint failed" in message and "users.username" in message:
+        if is_unique_violation(exc, identifiers=_USERNAME_UNIQUE_IDENTIFIERS):
             raise UsernameAlreadyExistsError("Username already exists") from exc
         raise
     return db_user
@@ -228,8 +240,7 @@ async def update_user_admin(
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
-        message = str(getattr(exc, "orig", exc)).lower()
-        if "unique constraint failed" in message and "users.username" in message:
+        if is_unique_violation(exc, identifiers=_USERNAME_UNIQUE_IDENTIFIERS):
             raise UsernameAlreadyExistsError("Username already exists") from exc
         raise
     return db_user

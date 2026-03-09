@@ -18,3 +18,4 @@ redis
 pwdlib[argon2]
 fastapi-limiter
 prometheus-fastapi-instrumentator
+gunicorn

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from src.auth.exceptions import UsernameAlreadyExistsError
 from src.user_role import crud
 from src.user_role.exceptions import (
     DuplicatePermissionKeysError,
@@ -139,6 +140,27 @@ async def test_create_role_rejects_duplicate_name():
 
 
 @pytest.mark.asyncio
+async def test_create_role_rejects_postgres_duplicate_name():
+    session = SimpleNamespace(
+        add=Mock(),
+        commit=AsyncMock(
+            side_effect=IntegrityError(
+                statement="INSERT INTO roles ...",
+                params={},
+                orig=Exception('duplicate key value violates unique constraint "roles_name_key"'),
+            )
+        ),
+        rollback=AsyncMock(),
+    )
+
+    with pytest.raises(RoleAlreadyExistsError):
+        await crud.create_role(session, name="Admin", title_key="role.admin.title")
+
+    session.add.assert_called_once()
+    session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_delete_role_rejects_role_in_use():
     role = SimpleNamespace(id=7, name="Custom")
     session = SimpleNamespace(
@@ -154,6 +176,33 @@ async def test_delete_role_rejects_role_in_use():
     assert exc.value.user_count == 2
     session.delete.assert_not_awaited()
     session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_user_admin_rejects_postgres_duplicate_username():
+    session = SimpleNamespace(
+        scalar=AsyncMock(return_value=2),
+        add=Mock(),
+        commit=AsyncMock(
+            side_effect=IntegrityError(
+                statement="INSERT INTO users ...",
+                params={},
+                orig=Exception('duplicate key value violates unique constraint "users_username_key"'),
+            )
+        ),
+        rollback=AsyncMock(),
+    )
+
+    with pytest.raises(UsernameAlreadyExistsError):
+        await crud.create_user_admin(
+            session,
+            username="admin123",
+            password="StrongPass123",
+            role_id=2,
+        )
+
+    session.add.assert_called_once()
+    session.rollback.assert_awaited_once()
 
 
 def test_registered_permission_keys_include_new_rbac_crud_keys():

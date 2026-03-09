@@ -4,8 +4,53 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from fastapi import Depends
+from pydantic import TypeAdapter, ValidationError
 
+from src.user_role.schemas import RoleResponseSchema, UserResponseSchema
 from src.utils.cache import RedisCacheService, get_request_cache_service
+
+_ROLE_LIST_ADAPTER = TypeAdapter(list[RoleResponseSchema])
+_USER_LIST_ADAPTER = TypeAdapter(list[UserResponseSchema])
+
+
+def _serialize_model_list(items: list[RoleResponseSchema] | list[UserResponseSchema]) -> list[dict[str, Any]]:
+    return [item.model_dump() for item in items]
+
+
+def _normalize_role_item(payload: Any, *, expected_role_id: int | None = None) -> dict[str, Any] | None:
+    try:
+        item = RoleResponseSchema.model_validate(payload)
+    except ValidationError:
+        return None
+    if expected_role_id is not None and item.id != expected_role_id:
+        return None
+    return item.model_dump()
+
+
+def _normalize_user_item(payload: Any, *, expected_user_id: int | None = None) -> dict[str, Any] | None:
+    try:
+        item = UserResponseSchema.model_validate(payload)
+    except ValidationError:
+        return None
+    if expected_user_id is not None and item.id != expected_user_id:
+        return None
+    return item.model_dump()
+
+
+def _normalize_role_list(payload: Any) -> list[dict[str, Any]] | None:
+    try:
+        items = _ROLE_LIST_ADAPTER.validate_python(payload)
+    except ValidationError:
+        return None
+    return _serialize_model_list(items)
+
+
+def _normalize_user_list(payload: Any) -> list[dict[str, Any]] | None:
+    try:
+        items = _USER_LIST_ADAPTER.validate_python(payload)
+    except ValidationError:
+        return None
+    return _serialize_model_list(items)
 
 
 class JsonCacheBackend(Protocol):
@@ -42,7 +87,14 @@ class RbacCacheService:
     backend: JsonCacheBackend
 
     async def get_role(self, role_id: int) -> dict[str, Any] | None:
-        return await self.backend.get_json(build_role_cache_key(role_id))
+        payload = await self.backend.get_json(build_role_cache_key(role_id))
+        if payload is None:
+            return None
+        normalized_item = _normalize_role_item(payload, expected_role_id=role_id)
+        if normalized_item is None:
+            await self.invalidate_role(role_id)
+            return None
+        return normalized_item
 
     async def set_role(
         self,
@@ -57,12 +109,14 @@ class RbacCacheService:
 
     async def get_role_list(self) -> list[dict[str, Any]] | None:
         payload = await self.backend.get_json(build_role_list_cache_key())
-        if not isinstance(payload, dict):
+        if payload is None:
             return None
         items = payload.get("items")
-        if not isinstance(items, list):
+        normalized_items = _normalize_role_list(items)
+        if normalized_items is None:
+            await self.invalidate_role_list()
             return None
-        return items
+        return normalized_items
 
     async def set_role_list(
         self,
@@ -75,7 +129,14 @@ class RbacCacheService:
         await self.backend.delete(build_role_list_cache_key())
 
     async def get_user(self, user_id: int) -> dict[str, Any] | None:
-        return await self.backend.get_json(build_user_cache_key(user_id))
+        payload = await self.backend.get_json(build_user_cache_key(user_id))
+        if payload is None:
+            return None
+        normalized_item = _normalize_user_item(payload, expected_user_id=user_id)
+        if normalized_item is None:
+            await self.invalidate_user(user_id)
+            return None
+        return normalized_item
 
     async def set_user(
         self,
@@ -90,12 +151,14 @@ class RbacCacheService:
 
     async def get_user_list(self) -> list[dict[str, Any]] | None:
         payload = await self.backend.get_json(build_user_list_cache_key())
-        if not isinstance(payload, dict):
+        if payload is None:
             return None
         items = payload.get("items")
-        if not isinstance(items, list):
+        normalized_items = _normalize_user_list(items)
+        if normalized_items is None:
+            await self.invalidate_user_list()
             return None
-        return items
+        return normalized_items
 
     async def set_user_list(
         self,

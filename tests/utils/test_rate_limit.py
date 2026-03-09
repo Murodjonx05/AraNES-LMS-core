@@ -18,7 +18,12 @@ class _FakeRedisClient:
 
 
 def _build_runtime(*, redis_enabled: bool, client=None):
-    cache_service = SimpleNamespace(enabled=redis_enabled, client=client, mark_unavailable=lambda: None)
+    cache_service = SimpleNamespace(
+        enabled=redis_enabled,
+        client=client,
+        mark_unavailable=lambda: None,
+        is_available=lambda: redis_enabled and client is not None,
+    )
     config = SimpleNamespace(
         RATE_LIMIT_ENABLED=True,
         RATE_LIMIT_MAX_REQUESTS=2,

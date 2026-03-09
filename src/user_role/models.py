@@ -10,8 +10,9 @@ class Role(Model):
     name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     # Can be an empty string when a role has no i18n title binding yet.
     title_key: Mapped[str] = mapped_column(String(128), nullable=False, default="")
-    permissions: Mapped[dict[str, bool]] = mapped_column(
+    permissions: Mapped[dict[str, bool] | None] = mapped_column(
         MutableDict.as_mutable(JSON),
+        default=dict,
         nullable=True,
     )
 
@@ -24,8 +25,9 @@ class User(Model):
     username: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
     password: Mapped[str] = mapped_column(String(128), nullable=False)
     role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), nullable=False)
-    permissions: Mapped[dict[str, bool]] = mapped_column(
+    permissions: Mapped[dict[str, bool] | None] = mapped_column(
         MutableDict.as_mutable(JSON),
+        default=dict,
         nullable=True,
     )
 

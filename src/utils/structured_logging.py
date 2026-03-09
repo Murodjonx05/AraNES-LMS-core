@@ -56,5 +56,4 @@ def configure_structured_logging(config_or_level: AppConfig | str | int | None =
 
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:
-    setup_logging()
     return structlog.get_logger(name)

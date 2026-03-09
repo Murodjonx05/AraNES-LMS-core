@@ -262,6 +262,40 @@ async def test_i18n_small_read_falls_back_to_db_when_redis_fails(
 
 
 @pytest.mark.asyncio
+async def test_schema_invalid_i18n_cache_entries_are_deleted_and_fall_back_to_db(
+    client: httpx.AsyncClient,
+    superuser_tokens: dict[str, str],
+):
+    runtime = _get_runtime(client)
+    fake_cache = _FakeCache()
+    fake_cache.values[build_small_cache_key("role.super_admin.title")] = {
+        "key": "role.student.title",
+        "data": {"en": "Wrong"},
+    }
+    fake_cache.values[build_small_list_cache_key()] = {
+        "items": [{"oops": "bad-shape"}]
+    }
+    runtime.cache_service = fake_cache
+
+    item_response = await client.get(
+        "/api/v1/i18n/small/role.super_admin.title",
+        headers=_auth_headers(superuser_tokens["access"]),
+    )
+    assert item_response.status_code == 200, item_response.text
+    assert item_response.json()["key"] == "role.super_admin.title"
+
+    list_response = await client.get(
+        "/api/v1/i18n/small",
+        headers=_auth_headers(superuser_tokens["access"]),
+    )
+    assert list_response.status_code == 200, list_response.text
+    assert isinstance(list_response.json(), list)
+
+    assert build_small_cache_key("role.super_admin.title") in fake_cache.deleted
+    assert build_small_list_cache_key() in fake_cache.deleted
+
+
+@pytest.mark.asyncio
 async def test_malformed_cache_entries_do_not_break_i18n_or_rbac_reads(
     client: httpx.AsyncClient,
     superuser_tokens: dict[str, str],

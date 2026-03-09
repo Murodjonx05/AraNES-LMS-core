@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 from sqlalchemy.engine import Connection
 
-from src.config import build_app_config
-from src.database import Model
+from src.auth.revocation import _revocation_metadata
+from src.database import (
+    Model,
+    escape_alembic_ini_value,
+    resolve_runtime_database_url,
+    to_sync_database_url,
+)
 
 # Import model modules so SQLAlchemy metadata is fully populated for autogenerate.
 import src.i18n.models  # noqa: F401
@@ -18,13 +24,15 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Alembic works more reliably with a synchronous SQLAlchemy URL/engine.
-# The app itself remains async (`sqlite+aiosqlite`), but migrations use sync drivers.
-APP_CONFIG = build_app_config()
-alembic_url = APP_CONFIG.DATABASE_URL.replace("+aiosqlite", "")
-config.set_main_option("sqlalchemy.url", alembic_url)
+BASE_DIR = Path(__file__).resolve().parents[1]
+runtime_database_url = resolve_runtime_database_url(base_dir=BASE_DIR)
 
-target_metadata = Model.metadata
+# Alembic works more reliably with a synchronous SQLAlchemy URL/engine.
+# The app itself remains async, but migrations use sync drivers.
+alembic_url = to_sync_database_url(runtime_database_url)
+config.set_main_option("sqlalchemy.url", escape_alembic_ini_value(alembic_url))
+
+target_metadata = [Model.metadata, _revocation_metadata]
 
 
 def run_migrations_offline() -> None:

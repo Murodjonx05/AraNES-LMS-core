@@ -6,6 +6,7 @@ from alembic.config import Config as AlembicConfig
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.database import is_in_memory_sqlite_url
 from src.runtime import RuntimeContext, get_default_runtime
 
 logger = logging.getLogger(__name__)
@@ -13,6 +14,11 @@ logger = logging.getLogger(__name__)
 
 def run_startup_alembic_upgrade(*, runtime: RuntimeContext | None = None) -> None:
     runtime = runtime or get_default_runtime()
+    if is_in_memory_sqlite_url(runtime.config.DATABASE_URL):
+        raise RuntimeError(
+            "Automatic startup Alembic migration is not supported for in-memory SQLite databases. "
+            "Use a file-backed database or initialize schema on the runtime engine before startup."
+        )
     command.upgrade(AlembicConfig(str(Path(runtime.config.BASE_DIR) / "alembic.ini")), "head")
     logger.info("Applied Alembic migrations on startup.")
 
@@ -56,10 +62,8 @@ async def run_bootstrap_seeding(
     session_factory = session_factory or runtime.session_factory
 
     async with session_factory() as session:
-        await seed_roles_if_missing(session)
-        ensure_translate_registrars_loaded()
-        if (
+        async with session.begin():
+            await seed_roles_if_missing(session, commit=False)
+            ensure_translate_registrars_loaded()
             await seed_small_i18n_titles_if_missing(session, commit=False)
-            or await seed_large_i18n_descriptions_if_missing(session, commit=False)
-        ):
-            await session.commit()
+            await seed_large_i18n_descriptions_if_missing(session, commit=False)
