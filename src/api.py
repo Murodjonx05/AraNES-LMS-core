@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from src.auth.dependencies import require_access_token_payload
 from src.auth.route import auth_closed_route, auth_opened_route
 from src.i18n.route import i18n_route
+from src.plugins.route import plugins_route
 from src.user_role.route import user_role_route
 
 
@@ -39,10 +40,10 @@ ROUTES: tuple[RouteSpec, ...] = (
     RouteSpec(router=auth_closed_route, access=CLOSED),
     RouteSpec(router=user_role_route),
     RouteSpec(router=i18n_route),
+    RouteSpec(router=plugins_route),
 )
 
 for route_spec in ROUTES:
     _include_route(all_routes, route_spec)
-
 
 __all__ = ["RouteAccess", "OPENED", "CLOSED", "RouteSpec", "all_routes"]

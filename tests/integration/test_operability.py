@@ -341,3 +341,16 @@ async def test_invalid_bearer_token_is_logged_for_actor_extraction(
     assert response.status_code == 401, response.text
     assert response.headers.get("X-Request-ID") == "bad-token-test"
     assert any("actor subject extraction failed" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_request_handling_uses_app_state_runtime_not_global(
+    client: httpx.AsyncClient,
+):
+    """When app.state.runtime is set, request handling must use it and not call get_default_runtime()."""
+    from unittest.mock import patch
+
+    with patch("src.runtime.get_default_runtime") as mock_get_runtime:
+        response = await client.get("/health")
+        assert response.status_code == 200, response.text
+        mock_get_runtime.assert_not_called()

@@ -34,6 +34,28 @@ async def test_me_rejects_invalid_bearer(unauth_client: httpx.AsyncClient):
         headers=bearer_headers("not-a-valid-token"),
     )
     assert response.status_code == 401, response.text
+    body = response.json()
+    assert "message" in body
+    assert body.get("error_type", "").endswith("JWTDecodeError") or "token" in body.get("message", "").lower()
+    assert response.headers.get("X-Request-ID")
+
+
+@pytest.mark.asyncio
+async def test_authenticated_me_completes_quickly(client: httpx.AsyncClient):
+    """Sanity check: authenticated request should complete without obvious regression."""
+    import time
+
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "superuser", "password": "superuser11"},
+    )
+    assert login.status_code == 200
+    token = login.json()["access_token"]
+    start = time.perf_counter()
+    resp = await client.get("/api/v1/auth/me", headers=bearer_headers(token))
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    assert resp.status_code == 200
+    assert elapsed_ms < 2000, f"Authenticated /me took {elapsed_ms:.0f}ms (expected < 2000ms)"
 
 
 @pytest.mark.asyncio

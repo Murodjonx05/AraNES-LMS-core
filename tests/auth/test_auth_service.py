@@ -463,3 +463,33 @@ def test_explicit_security_and_engine_do_not_require_default_runtime():
     assert resolved_engine is engine
     assert resolved_cache_service is None
     get_default_runtime_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_is_token_revoked_falls_back_to_db_when_cache_returns_none():
+    """When Redis/cache is unavailable or returns None, revocation check uses DB."""
+    token = "fallback-token"
+    security = _InvalidSecurity()
+    cache_service = _FakeCacheService()
+    engine = await _create_revocation_engine()
+    try:
+        assert await service.is_token_revoked(
+            token,
+            security=security,
+            engine=engine,
+            cache_service=cache_service,  # type: ignore[arg-type]
+        ) is False
+        await service.revoke_token(
+            token,
+            security=security,
+            engine=engine,
+            cache_service=cache_service,  # type: ignore[arg-type]
+        )
+        assert await service.is_token_revoked(
+            token,
+            security=security,
+            engine=engine,
+            cache_service=cache_service,  # type: ignore[arg-type]
+        ) is True
+    finally:
+        await engine.dispose()

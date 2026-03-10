@@ -15,7 +15,7 @@
 
 - FastAPI + async SQLAlchemy + Alembic
 - `RuntimeContext` для `config/security/engine/session_factory/cache_service`
-- разделение на домены: `auth`, `user_role`, `i18n`, `startup`, `utils`
+- разделение на домены: `auth`, `user_role`, `i18n`, `plugins`, `startup`, `utils`, `http`
 - env-driven config через `src/config.py`
 
 ### Auth
@@ -39,12 +39,19 @@
 - bootstrap registry + seed default translations
 - Redis read-through cache для list/item endpoints
 
+### Plugins
+
+- API управления плагинами: `GET /api/v1/plugins`, `PATCH /api/v1/plugins/{name}` (требуется `rbac_can_manage_permissions`)
+- таблица `plugin_mappings` для хранения включённых плагинов и префиксов (когда шлюз не используется)
+- опциональный **plugin gateway** (`gateway_server/`): отдельный процесс, обнаруживает сервисы по `manifest.json` в `services/`, запускает их как subprocess, отдаёт `GET /services` и проксирует запросы под `/plg/{name}/...`
+- демо-сервисы: `demo_fastapi`, `demo_flask`, `demo_node` в `services/`
+
 ### Operations
 
 - `GET /health`
 - `GET /ready`
 - structured request logging
-- audit logging для mutating admin-sensitive actions
+- audit logging для mutating admin-sensitive actions (в т.ч. `/api/v1/plugins`)
 - Redis-backed rate limit при доступном Redis, с in-memory fallback
 
 ### Delivery
@@ -68,9 +75,10 @@
 ## Практический вывод
 
 Сейчас это уже не “черновой backend”, а рабочий backend-core с нормальной структурой, тестами,
-операционным базисом и минимальным CI/CD. Дальнейшие улучшения будут уже не про базовую
+операционным базисом, плагинами/шлюзом и минимальным CI/CD. Дальнейшие улучшения будут уже не про базовую
 жизнеспособность, а про:
 
 - дальнейшую оптимизацию hot-path
 - ужесточение production policy
 - выравнивание документации и поддержание её в актуальном состоянии
+- при необходимости — расширение модели плагинов (например, in-process роутеры рядом с gateway)

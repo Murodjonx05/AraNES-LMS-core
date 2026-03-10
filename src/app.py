@@ -2,15 +2,20 @@ import authx.exceptions as authx_exceptions
 import time
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+import httpx
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from prometheus_client import CollectorRegistry
 from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import text
+from starlette.background import BackgroundTask
 
 from src.api import all_routes
+from src.auth.dependencies import require_access_token_payload
+from src.http.constants import HOP_BY_HOP_HEADERS
 from src.http.errors import build_internal_server_error_response, build_jwt_decode_error_response
+from src.plugins.registry import build_plugin_router
 from src.http.observability import (
     OPERABILITY_LOGGER,
     apply_request_id,
@@ -62,6 +67,59 @@ def _engine_backend_name(engine: object) -> str:
     if callable(get_backend_name):
         return str(get_backend_name())
     return "unknown"
+
+
+def _install_plugin_proxy(app: FastAPI, gateway_base: str) -> None:
+    """Register the /plg/{plugin_name}/{path} proxy route that forwards to the gateway."""
+
+    @app.api_route(
+        "/plg/{plugin_name}/{path:path}",
+        methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+        include_in_schema=False,
+        dependencies=[Depends(require_access_token_payload)],
+    )
+    async def proxy_plugin_to_gateway(plugin_name: str, path: str, request: Request):
+        del path
+        target = f"{gateway_base}{request.url.path}"
+        headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
+        client: httpx.AsyncClient = getattr(app.state, "plugin_gateway_client", None)
+        if client is None:
+            client = httpx.AsyncClient(timeout=30.0, follow_redirects=False)
+            use_shared = False
+        else:
+            use_shared = True
+
+        try:
+            req = client.build_request(
+                method=request.method,
+                url=target,
+                headers=headers,
+                params=request.query_params.multi_items(),
+                content=await request.body(),
+                cookies=request.cookies,
+            )
+            resp = await client.send(req, stream=True)
+        except httpx.HTTPError:
+            if not use_shared:
+                await client.aclose()
+            return JSONResponse(status_code=502, content={"detail": f"Bad Gateway for plugin: {plugin_name}"})
+        except Exception:
+            if not use_shared:
+                await client.aclose()
+            raise
+
+        async def _close():
+            await resp.aclose()
+            if not use_shared:
+                await client.aclose()
+
+        resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in HOP_BY_HOP_HEADERS}
+        return StreamingResponse(
+            resp.aiter_raw(),
+            status_code=resp.status_code,
+            headers=resp_headers,
+            background=BackgroundTask(_close),
+        )
 
 
 def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
@@ -160,7 +218,14 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
         registry=app.state.metrics_registry,
     ).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False, tags=["system"])
 
+    gateway_url = runtime.config.PLUGIN_GATEWAY_URL
+    if gateway_url:
+        _install_plugin_proxy(app, gateway_url.rstrip("/"))
+
     app.include_router(all_routes)
+    plugin_router = build_plugin_router()
+    if plugin_router.routes:
+        app.include_router(plugin_router)
     attach_inprocess_http(app)
     runtime.security.handle_errors(app)
 

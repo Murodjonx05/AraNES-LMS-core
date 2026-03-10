@@ -6,7 +6,7 @@ from src.auth.dependencies import peek_cached_access_token_payload
 from src.runtime import RuntimeContext
 from src.utils.structured_logging import get_logger
 
-_AUDITED_PREFIXES = ("/api/v1/rbac", "/api/v1/i18n")
+_AUDITED_PREFIXES = ("/api/v1/rbac", "/api/v1/i18n", "/api/v1/plugins")
 _AUDITED_EXACT_PATHS = frozenset({"/api/v1/auth/reset"})
 _CURRENT_ACTOR_STATE_KEY = "_current_actor"
 _CURRENT_USER_ROLE_STATE_KEY = "_current_user_with_role"
@@ -67,12 +67,18 @@ def extract_actor_subject(request, runtime: RuntimeContext) -> str | None:
         return cached
     if getattr(request.state, "actor_subject_resolved", False):
         return None
-
     actor_subject = _stable_actor_subject_from_request_state(request)
     if actor_subject is not None:
         request.state.actor_subject = actor_subject
         request.state.actor_subject_resolved = True
         return actor_subject
+
+    # Reuse payload from auth dependency when present to avoid any extra work.
+    payload = peek_cached_access_token_payload(request)
+    if payload is not None:
+        request.state.actor_subject = _stable_actor_subject_from_payload(payload)
+        request.state.actor_subject_resolved = True
+        return request.state.actor_subject
 
     auth_header = request.headers.get("authorization", "").strip()
     if not auth_header.lower().startswith("bearer "):
@@ -82,14 +88,9 @@ def extract_actor_subject(request, runtime: RuntimeContext) -> str | None:
     if not token:
         request.state.actor_subject_resolved = True
         return None
-    payload = peek_cached_access_token_payload(request)
-    if payload is None:
-        warn_actor_subject_extraction_failed(request)
-        request.state.actor_subject_resolved = True
-        return None
-    request.state.actor_subject = _stable_actor_subject_from_payload(payload)
+    warn_actor_subject_extraction_failed(request)
     request.state.actor_subject_resolved = True
-    return request.state.actor_subject
+    return None
 
 
 def should_audit_request(path: str, method: str) -> bool:

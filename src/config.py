@@ -134,6 +134,12 @@ class AppConfig:
     RATE_LIMIT_WINDOW_SECONDS: int
     RATE_LIMIT_MAX_REQUESTS: int
     STARTUP_DB_BOOTSTRAP_ENABLED: bool
+    PLUGIN_MANAGER_ENABLED: bool
+    PLUGIN_GATEWAY_URL: str | None
+    PLUGIN_GATEWAY_CACHE_TTL_SECONDS: float
+    PLUGIN_START_PORT: int
+    PLUGIN_READINESS_TIMEOUT: float
+    PLUGIN_SERVICES_DIR: Path
     REDIS_ENABLED: bool
     REDIS_URL: str
     REDIS_DEFAULT_TTL_SECONDS: int
@@ -163,6 +169,11 @@ class _AppSettings(BaseSettings):
     RATE_LIMIT_WINDOW_SECONDS: int = 60
     RATE_LIMIT_MAX_REQUESTS: int = 20
     STARTUP_DB_BOOTSTRAP_ENABLED: bool = True
+    PLUGIN_MANAGER_ENABLED: bool = True
+    PLUGIN_GATEWAY_URL: str | None = None
+    PLUGIN_GATEWAY_CACHE_TTL_SECONDS: float = 2.0
+    PLUGIN_START_PORT: int = 10000
+    PLUGIN_READINESS_TIMEOUT: float = 20.0
 
     REDIS_ENABLED: bool = False
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -185,6 +196,7 @@ class _AppSettings(BaseSettings):
         "HOST",
         "DATABASE_URL",
         "REDIS_URL",
+        "PLUGIN_GATEWAY_URL",
         mode="before",
     )
     @classmethod
@@ -192,6 +204,13 @@ class _AppSettings(BaseSettings):
         if isinstance(value, str):
             return value.strip()
         return value
+
+    @field_validator("PLUGIN_GATEWAY_URL", mode="after")
+    @classmethod
+    def _normalize_plugin_gateway_url(cls, value: str | None) -> str | None:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        return value.strip() if isinstance(value, str) else value
 
     @field_validator(
         "CORS_ALLOW_ORIGINS",
@@ -233,6 +252,25 @@ class _AppSettings(BaseSettings):
     @classmethod
     def _validate_rate_limit_max_requests(cls, value: int) -> int:
         return _validate_int_range("RATE_LIMIT_MAX_REQUESTS", value, minimum=1, maximum=10000)
+
+    @field_validator("PLUGIN_START_PORT", mode="after")
+    @classmethod
+    def _validate_plugin_start_port(cls, value: int) -> int:
+        return _validate_int_range("PLUGIN_START_PORT", value, minimum=1, maximum=65535)
+
+    @field_validator("PLUGIN_READINESS_TIMEOUT", mode="after")
+    @classmethod
+    def _validate_plugin_readiness_timeout(cls, value: float) -> float:
+        if value < 1.0 or value > 120.0:
+            raise ValueError("PLUGIN_READINESS_TIMEOUT must be between 1.0 and 120.0 seconds.")
+        return value
+
+    @field_validator("PLUGIN_GATEWAY_CACHE_TTL_SECONDS", mode="after")
+    @classmethod
+    def _validate_plugin_gateway_cache_ttl_seconds(cls, value: float) -> float:
+        if value < 0.0 or value > 300.0:
+            raise ValueError("PLUGIN_GATEWAY_CACHE_TTL_SECONDS must be between 0.0 and 300.0 seconds.")
+        return value
 
     @field_validator("REDIS_DEFAULT_TTL_SECONDS", mode="after")
     @classmethod
@@ -299,6 +337,12 @@ class _AppSettings(BaseSettings):
             RATE_LIMIT_WINDOW_SECONDS=self.RATE_LIMIT_WINDOW_SECONDS,
             RATE_LIMIT_MAX_REQUESTS=self.RATE_LIMIT_MAX_REQUESTS,
             STARTUP_DB_BOOTSTRAP_ENABLED=self.STARTUP_DB_BOOTSTRAP_ENABLED,
+            PLUGIN_MANAGER_ENABLED=self.PLUGIN_MANAGER_ENABLED,
+            PLUGIN_GATEWAY_URL=self.PLUGIN_GATEWAY_URL,
+            PLUGIN_GATEWAY_CACHE_TTL_SECONDS=self.PLUGIN_GATEWAY_CACHE_TTL_SECONDS,
+            PLUGIN_START_PORT=self.PLUGIN_START_PORT,
+            PLUGIN_READINESS_TIMEOUT=self.PLUGIN_READINESS_TIMEOUT,
+            PLUGIN_SERVICES_DIR=base_dir / "services",
             REDIS_ENABLED=self.REDIS_ENABLED,
             REDIS_URL=self.REDIS_URL,
             REDIS_DEFAULT_TTL_SECONDS=self.REDIS_DEFAULT_TTL_SECONDS,

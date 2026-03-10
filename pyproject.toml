@@ -3,6 +3,27 @@ name = "aranes-lms-core"
 version = "0.1.0"
 description = "FastAPI backend core for LMS auth, RBAC, and i18n services."
 requires-python = ">=3.11"
+dependencies = [
+    "authx>=0.1",
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.22",
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.19",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    "alembic>=1.12",
+    "redis>=5",
+    "structlog>=23",
+    "prometheus-client>=0.17",
+    "prometheus-fastapi-instrumentator>=6",
+    "pyrate-limiter>=2",
+    "fastapi-limiter>=0.1",
+    "pwdlib[argon2]>=0.2",
+    "httpx>=0.24",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-asyncio>=0.21", "httpx>=0.24"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

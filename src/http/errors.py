@@ -39,13 +39,14 @@ def build_internal_server_error_response(request: Request, exc: Exception):
 
 
 def build_jwt_decode_error_response(request: Request, exc: authx_exceptions.JWTDecodeError):
+    """Return 401 with a safe, non-leaky message. Do not expose token or decode details to clients."""
     request_id = resolve_request_id(request)
     warn_actor_subject_extraction_failed(request, error_type=exc.__class__.__name__)
     return apply_request_id(
         JSONResponse(
             status_code=401,
             content={
-                "message": str(exc) or "Invalid Token",
+                "message": "Invalid token",
                 "error_type": exc.__class__.__name__,
             },
         ),
