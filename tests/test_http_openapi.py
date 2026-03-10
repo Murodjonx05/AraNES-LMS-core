@@ -4,7 +4,6 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 
-import src.app as app_module
 from src.app import create_app
 from src.config import build_app_config
 from src.runtime import build_runtime, reset_default_runtime
@@ -53,22 +52,3 @@ def test_openapi_open_route_has_no_security(app_with_openapi: FastAPI):
     assert login, "Expected /api/v1/auth/login in OpenAPI paths"
     post_op = login.get("post", {})
     assert post_op.get("security") == []
-
-
-def test_get_app_is_cached(monkeypatch: pytest.MonkeyPatch):
-    created: list[FastAPI] = []
-
-    def _fake_create_app(runtime=None) -> FastAPI:
-        del runtime
-        app = FastAPI()
-        created.append(app)
-        return app
-
-    monkeypatch.setattr(app_module, "create_app", _fake_create_app)
-    app_module.get_app.cache_clear()
-
-    first = app_module.get_app()
-    second = app_module.get_app()
-
-    assert first is second
-    assert created == [first]

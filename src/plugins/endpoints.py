@@ -6,17 +6,10 @@ from time import monotonic
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy.exc import IntegrityError
 
 from src.database import DbSession
-from src.plugins.crud import (
-    create_plugin_mapping,
-    delete_plugin_mapping,
-    get_plugin_mapping,
-    list_plugin_mappings,
-    set_plugin_enabled,
-)
-from src.plugins.schemas import PluginEnabledPatch, PluginMappingCreate, PluginMappingRead
+from src.plugins.crud import get_plugin_mapping, list_plugin_mappings, set_plugin_enabled
+from src.plugins.schemas import PluginEnabledPatch, PluginMappingRead
 from src.user_role.middlewares import require_permission
 from src.user_role.permission import RBAC_CAN_MANAGE_PERMISSIONS
 
@@ -164,72 +157,12 @@ def _get_gateway_url(request: Request) -> str | None:
 
 
 @plugins_router.get("", response_model=list[PluginMappingRead])
-async def get_plugins(
-    request: Request,
-    session: DbSession,
-    refresh: bool = False,
-) -> list[PluginMappingRead]:
+async def get_plugins(request: Request, session: DbSession) -> list[PluginMappingRead]:
     gateway_url = _get_gateway_url(request)
     if gateway_url:
-        if refresh:
-            services = await _fetch_gateway_services(gateway_url)
-            ttl_seconds = _gateway_services_cache_ttl_seconds(request)
-            normalized = _write_gateway_services_cache(
-                request, gateway_url, services, ttl_seconds=ttl_seconds
-            )
-            return normalized
         return await _get_gateway_services(request, gateway_url)
     mappings = await list_plugin_mappings(session)
     return [_serialize_db_mapping(m) for m in mappings]
-
-
-@plugins_router.post("", response_model=PluginMappingRead, status_code=201)
-async def create_plugin(
-    payload: PluginMappingCreate,
-    request: Request,
-    session: DbSession,
-) -> PluginMappingRead:
-    gateway_url = _get_gateway_url(request)
-    if gateway_url:
-        raise HTTPException(
-            status_code=405,
-            detail="POST is not supported when using the plugin gateway. Gateway-managed plugins are read-only.",
-        )
-    service_name = payload.service_name or payload.plugin_name
-    try:
-        mapping = await create_plugin_mapping(
-            session,
-            plugin_name=payload.plugin_name,
-            service_name=service_name,
-            mount_prefix=payload.mount_prefix,
-            enabled=payload.enabled,
-        )
-    except IntegrityError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Plugin mapping already exists: {payload.plugin_name}",
-        ) from exc
-    await session.commit()
-    return _serialize_db_mapping(mapping)
-
-
-@plugins_router.get("/{plugin_name}", response_model=PluginMappingRead)
-async def get_plugin(
-    plugin_name: str,
-    request: Request,
-    session: DbSession,
-) -> PluginMappingRead:
-    gateway_url = _get_gateway_url(request)
-    if gateway_url:
-        services = await _get_gateway_services(request, gateway_url)
-        for s in services:
-            if s.plugin_name == plugin_name:
-                return s
-        raise HTTPException(status_code=404, detail=f"Plugin not found: {plugin_name}")
-    mapping = await get_plugin_mapping(session, plugin_name)
-    if mapping is None:
-        raise HTTPException(status_code=404, detail=f"Plugin mapping not found: {plugin_name}")
-    return _serialize_db_mapping(mapping)
 
 
 @plugins_router.patch("/{plugin_name}", response_model=PluginMappingRead)
@@ -250,21 +183,3 @@ async def patch_plugin_enabled(
         raise HTTPException(status_code=404, detail=f"Plugin mapping not found: {plugin_name}")
     await session.commit()
     return _serialize_db_mapping(mapping)
-
-
-@plugins_router.delete("/{plugin_name}", status_code=204)
-async def delete_plugin(
-    plugin_name: str,
-    request: Request,
-    session: DbSession,
-) -> None:
-    gateway_url = _get_gateway_url(request)
-    if gateway_url:
-        raise HTTPException(
-            status_code=405,
-            detail="DELETE is not supported when using the plugin gateway. Gateway-managed plugins are read-only.",
-        )
-    deleted = await delete_plugin_mapping(session, plugin_name)
-    if not deleted:
-        raise HTTPException(status_code=404, detail=f"Plugin mapping not found: {plugin_name}")
-    await session.commit()

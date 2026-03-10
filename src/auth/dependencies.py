@@ -15,6 +15,7 @@ _ACCESS_TOKEN_REQUIRED_DEPENDENCY_SECURITY_STATE_KEY = "_access_token_required_d
 
 
 def get_runtime_from_request(request: Request) -> RuntimeContext:
+    """Prefer app.state.runtime (set in create_app). Fallback for legacy/standalone callers."""
     return getattr(request.app.state, "runtime", None) or get_default_runtime()
 
 

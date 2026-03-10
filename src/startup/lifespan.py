@@ -1,5 +1,6 @@
 import logging
 
+import httpx
 from fastapi import FastAPI
 from sqlalchemy.exc import DBAPIError
 
@@ -14,6 +15,19 @@ from src.utils.cache import resolve_heartbeat_delay
 from src.utils.inprocess_http import close_inprocess_http
 
 logger = logging.getLogger(__name__)
+
+
+async def _fetch_gateway_openapi(gateway_url: str) -> dict | None:
+    base = gateway_url.rstrip("/")
+    url = f"{base}/openapi.json"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception as exc:
+        logger.warning("Failed to fetch gateway OpenAPI from %s: %s", url, exc)
+    return None
 
 
 async def lifespan(app: FastAPI):
@@ -58,9 +72,25 @@ async def lifespan(app: FastAPI):
                 await ensure_initial_super_user(runtime=runtime)
             except DBAPIError as exc:
                 raise_missing_schema_help(exc)
+
+        if runtime is not None:
+            gateway_url = getattr(runtime.config, "PLUGIN_GATEWAY_URL", None)
+            if gateway_url:
+                app.state.gateway_openapi_schema = await _fetch_gateway_openapi(gateway_url)
+                app.state.plugin_gateway_client = httpx.AsyncClient(timeout=30.0, follow_redirects=False)
+            else:
+                app.state.gateway_openapi_schema = None
+                app.state.plugin_gateway_client = None
+        else:
+            app.state.gateway_openapi_schema = None
+            app.state.plugin_gateway_client = None
+
         yield
     finally:
         if runtime is not None:
             await runtime.cache_service.close()
             await runtime.engine.dispose()
+        client = getattr(getattr(app, "state", None), "plugin_gateway_client", None)
+        if client is not None:
+            await client.aclose()
         await close_inprocess_http(app)

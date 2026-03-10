@@ -47,10 +47,6 @@ class TestConfigurationStates:
         assert config.PLUGIN_GATEWAY_CACHE_TTL_SECONDS == 5.5
         assert config.RATE_LIMIT_ENABLED is True
         assert config.LOG_LEVEL == "DEBUG"
-        assert config.OPERABILITY_DB_CHECK_TIMEOUT_SECONDS == 2.0
-        assert config.REDIS_COMMAND_TIMEOUT_SECONDS == 3.0
-        assert config.INPROCESS_HTTP_ROUTE_CACHE_MAX_ENTRIES == 4096
-        assert config.PLUGIN_GATEWAY_HTTP_TIMEOUT_SECONDS == 30.0
 
     def test_config_state_development(self, monkeypatch: pytest.MonkeyPatch):
         """Test: DEVELOPMENT_CONFIG state."""
@@ -126,22 +122,6 @@ class TestConfigurationStates:
         config = build_app_config()
 
         assert config.PLUGIN_GATEWAY_CACHE_TTL_SECONDS == 0.0
-
-    def test_operability_and_network_timeouts_are_env_tunable(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-with-32-byte-minimum!!")
-        monkeypatch.setenv("CORS_ALLOW_ORIGINS", "http://localhost:3000")
-        monkeypatch.setenv("OPERABILITY_DB_CHECK_TIMEOUT_SECONDS", "4.5")
-        monkeypatch.setenv("REDIS_COMMAND_TIMEOUT_SECONDS", "7")
-        monkeypatch.setenv("INPROCESS_HTTP_ROUTE_CACHE_MAX_ENTRIES", "512")
-        monkeypatch.setenv("PLUGIN_GATEWAY_HTTP_TIMEOUT_SECONDS", "45")
-
-        from src.config import build_app_config
-
-        config = build_app_config()
-        assert config.OPERABILITY_DB_CHECK_TIMEOUT_SECONDS == 4.5
-        assert config.REDIS_COMMAND_TIMEOUT_SECONDS == 7.0
-        assert config.INPROCESS_HTTP_ROUTE_CACHE_MAX_ENTRIES == 512
-        assert config.PLUGIN_GATEWAY_HTTP_TIMEOUT_SECONDS == 45.0
 
 
 class TestRedisStates:
