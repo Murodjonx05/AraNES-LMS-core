@@ -29,6 +29,7 @@ def get_request_cache_service(request: Request):
 
     from src.runtime import get_default_runtime
 
+    # Legacy fallback when request has no app.state.runtime (e.g. standalone scripts).
     return get_default_runtime().cache_service
 
 

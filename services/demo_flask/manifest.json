@@ -1,0 +1,10 @@
+{
+  "plugin_name": "demo_flask",
+  "version": "1.0.0",
+  "runtime": "python",
+  "start_command": ["python", "app.py"],
+  "health_path": "/health",
+  "openapi_path": null,
+  "startup_timeout_seconds": 20,
+  "auto_start": true
+}

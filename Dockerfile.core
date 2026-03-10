@@ -5,8 +5,9 @@ WORKDIR /app
 COPY . .
 RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements/release.txt
+RUN find /app/services -name run.sh -exec chmod +x {} +
 
-ENV WEB_CONCURRENCY=2
+ENV WEB_CONCURRENCY=1
 ENV GUNICORN_TIMEOUT=60
 ENV GUNICORN_KEEPALIVE=5
 ENV GUNICORN_MAX_REQUESTS=50000

@@ -79,3 +79,14 @@ Redis в проекте используется для:
 - `BOOTSTRAP_SUPERUSER_PASSWORD`
 
 Если bootstrap включён, приложение при startup создаёт initial superuser, если его ещё нет.
+
+## Plugin manager / Gateway
+
+- `PLUGIN_MANAGER_ENABLED` — включить API плагинов (по умолчанию `true`)
+- `PLUGIN_GATEWAY_URL` — URL шлюза плагинов (например `http://127.0.0.1:8001` или `http://plugins:8001` в Docker). Если задан, `GET /api/v1/plugins` возвращает список с шлюза (`/services`), а `PATCH` отключён
+- `PLUGIN_GATEWAY_CACHE_TTL_SECONDS` — TTL кэша списка плагинов, который ядро получает со шлюза. `0` отключает кэширование, значение по умолчанию `2.0`
+- `PLUGIN_START_PORT` — стартовый порт для процессов шлюза (по умолчанию 10000)
+- `PLUGIN_READINESS_TIMEOUT` — таймаут готовности сервиса плагина (секунды)
+- `PLUGIN_SERVICES_DIR` — каталог с сервисами плагинов для шлюза (по умолчанию `services/`)
+
+Подробнее: [Plugin manager architecture](./plugin_manager_architecture.md).

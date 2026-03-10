@@ -50,6 +50,7 @@ def _resolve_security_and_engine(
     engine: AsyncEngine | None = None,
     cache_service: RedisCacheService | None = None,
 ) -> tuple[AuthX, AsyncEngine, RedisCacheService | None]:
+    """Prefer explicit args. Fallback to global runtime for legacy/standalone callers (e.g. scripts)."""
     if security is not None and engine is not None:
         return security, engine, cache_service
 

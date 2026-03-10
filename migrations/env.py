@@ -17,6 +17,7 @@ from src.database import (
 
 # Import model modules so SQLAlchemy metadata is fully populated for autogenerate.
 import src.i18n.models  # noqa: F401
+import src.plugins.models  # noqa: F401
 import src.user_role.models  # noqa: F401
 
 config = context.config

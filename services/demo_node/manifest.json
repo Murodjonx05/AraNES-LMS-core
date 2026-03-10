@@ -1,0 +1,10 @@
+{
+  "plugin_name": "demo_node",
+  "version": "1.0.0",
+  "runtime": "node",
+  "start_command": ["node", "server.js"],
+  "health_path": "/health",
+  "openapi_path": "/openapi.json",
+  "startup_timeout_seconds": 15,
+  "auto_start": true
+}

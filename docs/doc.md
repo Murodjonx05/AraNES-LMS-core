@@ -19,6 +19,8 @@
   - `/health` и `/ready`
   - request/audit logging
   - request id и Redis heartbeat
+- [Plugin manager architecture](./plugin_manager_architecture.md)
+  - API плагинов (`GET/PATCH /api/v1/plugins`), шлюз плагинов, демо-сервисы
 - [Cache And Revocation](./cache_and_revocation.md)
   - i18n/RBAC Redis cache
   - auth token revocation

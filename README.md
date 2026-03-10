@@ -28,7 +28,11 @@ FastAPI backend for an LMS-oriented API with:
 - `src/auth/` - signup, login, revoke, current-user flow
 - `src/user_role/` - RBAC models, permissions, roles, users, bootstrap defaults
 - `src/i18n/` - translation models, seed data, CRUD, API routes
+- `src/plugins/` - plugin registry, CRUD mappings, gateway discovery, API routes
+- `src/http/` - observability, OpenAPI, errors, constants
 - `src/utils/` - profiler, in-process HTTP helper, superuser utility
+- `gateway_server/` - optional gateway that runs external plugin services (Node, Flask, FastAPI) and exposes them under `/plg/`
+- `services/` - demo plugin services (demo_node, demo_flask, demo_fastapi) for development
 - `migrations/` - Alembic migration history
 - `tests/` - unit and integration tests
 - `docs/` - project notes and analysis
@@ -41,6 +45,7 @@ All API routes are mounted under `/api`.
 - Auth: `/api/v1/auth`
 - RBAC: `/api/v1/rbac`
 - i18n: `/api/v1/i18n`
+- Plugins: `/api/v1/plugins`
 
 ## Main Endpoints
 
@@ -90,6 +95,13 @@ plugin-provided permission registration.
 - `GET /api/v1/i18n/large/{key1}/{key2}`
 - `PUT /api/v1/i18n/large`
 
+### Plugins
+
+- `GET /api/v1/plugins` — list plugin mappings (from gateway if `PLUGIN_GATEWAY_URL` is set, else from DB)
+- `PATCH /api/v1/plugins/{plugin_name}` — enable/disable a plugin (when using DB-backed mappings)
+
+Plugin management requires `rbac_can_manage_permissions`. When `PLUGIN_GATEWAY_URL` is set, the core fetches the list from the gateway's `/services` endpoint; otherwise it uses the `plugin_mappings` table.
+
 ### System
 
 - `GET /health`
@@ -136,7 +148,7 @@ If `DATABASE_URL` is unset, the app defaults to a local SQLite file at
 `data/db.sqlite3`.
 
 Optional overrides include `ENVIRONMENT`, `LOG_LEVEL`, `DATABASE_URL`, `HOST`,
-`PORT`, and CORS settings.
+`PORT`, CORS settings, and `PLUGIN_GATEWAY_URL` (URL of the plugin gateway for listing and proxying external plugins).
 
 Useful operational toggles:
 
@@ -405,6 +417,8 @@ CD publishes the container image to `GHCR`:
 
 ## Related Docs
 
+- [docs/doc.md](/run/media/aestra/data/PYTHON/lms/docs/doc.md) — index of how-to and configuration docs
+- [docs/plugin_manager_architecture.md](/run/media/aestra/data/PYTHON/lms/docs/plugin_manager_architecture.md) — plugin and gateway design
 - [docs/release.md](/run/media/aestra/data/PYTHON/lms/docs/release.md)
 - [docs/analysis_report_ru.md](/run/media/aestra/data/PYTHON/lms/docs/analysis_report_ru.md)
 

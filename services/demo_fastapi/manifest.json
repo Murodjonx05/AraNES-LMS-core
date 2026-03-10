@@ -1,0 +1,10 @@
+{
+  "plugin_name": "demo_fastapi",
+  "version": "1.0.0",
+  "runtime": "python",
+  "start_command": ["python", "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "${PORT}"],
+  "health_path": "/health",
+  "openapi_path": "/openapi.json",
+  "startup_timeout_seconds": 20,
+  "auto_start": true
+}

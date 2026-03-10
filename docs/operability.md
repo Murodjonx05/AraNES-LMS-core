@@ -58,3 +58,7 @@ Logger:
 Middleware добавляет `X-Request-ID` в response.
 
 Если входящий request уже содержит `x-request-id`, он переиспользуется.
+
+## Plugin gateway (optional)
+
+Если используется plugin gateway (`PLUGIN_GATEWAY_URL`), то список плагинов ядро получает с шлюза (`GET /services`). Сам трафик к плагинам (`/plg/{name}/...`) обслуживает шлюз; ядро только отдаёт управление через `GET/PATCH /api/v1/plugins`. Шлюз — отдельный процесс (`gateway_server/`), его health/ready не входят в `/health` и `/ready` ядра.

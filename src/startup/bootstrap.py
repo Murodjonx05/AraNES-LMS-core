@@ -20,6 +20,7 @@ _MISSING_SCHEMA_MARKERS = (
 
 
 def run_startup_alembic_upgrade(*, runtime: RuntimeContext | None = None) -> None:
+    # Lifespan passes runtime from app.state; fallback for direct/custom callers.
     runtime = runtime or get_default_runtime()
     if is_in_memory_sqlite_url(runtime.config.DATABASE_URL):
         raise RuntimeError(
@@ -48,6 +49,7 @@ def raise_missing_schema_help(exc: DBAPIError) -> None:
 async def ensure_initial_super_user(*, runtime: RuntimeContext | None = None) -> None:
     from src.utils.super_user import ensure_super_user_from_env_if_enabled
 
+    # Lifespan passes runtime from app.state; fallback for direct/custom callers.
     runtime = runtime or get_default_runtime()
     created = await ensure_super_user_from_env_if_enabled(session_factory=runtime.session_factory)
     if created:
@@ -67,6 +69,7 @@ async def run_bootstrap_seeding(
     from src.i18n.translates import get_registered_large_translates, get_registered_small_translates
     from src.user_role.bootstrap import seed_roles_if_missing
 
+    # Prefer an explicit session factory. Fall back to runtime, then default runtime.
     if session_factory is None:
         runtime = runtime or get_default_runtime()
         session_factory = runtime.session_factory

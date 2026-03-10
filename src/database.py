@@ -117,6 +117,7 @@ def _resolve_session_factory(
     runtime: RuntimeContext | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> async_sessionmaker[AsyncSession]:
+    """Resolve session factory: explicit args first, then request.app.state.runtime, then legacy global."""
     if session_factory is not None:
         return session_factory
     runtime_session_factory = _runtime_session_factory(runtime)
@@ -161,6 +162,7 @@ async def session_scope(
 
 
 def __getattr__(name: str):
+    # Legacy: async_engine for standalone use only. In request context use get_db_session or session_scope(runtime=...).
     if name == "async_engine":
         return get_default_runtime().engine
     raise AttributeError(name)

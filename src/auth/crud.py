@@ -98,6 +98,7 @@ async def get_or_create_default_signup_role_with_config(
     *,
     config: AppConfig | None = None,
 ) -> Role:
+    # Prefer explicit config (e.g. from get_runtime_from_request(request).config); fallback for legacy.
     app_config = config or get_default_runtime().config
     db_role = await _get_exact_default_signup_role(
         session,

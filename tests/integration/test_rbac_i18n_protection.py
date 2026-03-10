@@ -86,6 +86,7 @@ def user_password_payload() -> dict[str, str]:
         ("get", "/api/v1/rbac/roles/1", None),
         ("get", "/api/v1/rbac/users", None),
         ("get", "/api/v1/rbac/users/1", None),
+        ("get", "/api/v1/plugins", None),
         ("post", "/api/v1/rbac/roles", role_create_payload),
         ("patch", "/api/v1/rbac/roles/2", role_update_payload),
         ("delete", "/api/v1/rbac/roles/2", None),
@@ -184,6 +185,7 @@ async def test_regular_user_gets_403_on_permission_gated_endpoints(
         ("PATCH", "/api/v1/rbac/roles/2/permissions", permission_patch_payload()),
         ("POST", "/api/v1/rbac/users", user_create_payload()),
         ("POST", "/api/v1/rbac/users/reset", None),
+        ("GET", "/api/v1/plugins", None),
         ("PUT", "/api/v1/i18n/small", small_payload()),
         (
             "PATCH",
@@ -195,6 +197,18 @@ async def test_regular_user_gets_403_on_permission_gated_endpoints(
     for method, path, payload in cases:
         response = await client.request(method, path, headers=headers, json=payload)
         assert response.status_code == 403, f"{method} {path}: {response.status_code} {response.text}"
+
+
+@pytest.mark.asyncio
+async def test_superuser_can_list_plugins(
+    client: httpx.AsyncClient,
+    superuser_tokens: dict[str, str],
+):
+    response = await client.get(
+        "/api/v1/plugins",
+        headers=bearer_headers(superuser_tokens["access"]),
+    )
+    assert response.status_code == 200, response.text
 
 
 @pytest.mark.asyncio

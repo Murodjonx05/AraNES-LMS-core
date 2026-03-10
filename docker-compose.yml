@@ -13,18 +13,40 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      plugins:
+        condition: service_healthy
     ports: ["8000:8000"]
     environment:
       PYTHONUNBUFFERED: "1"
       REDIS_URL: redis://redis:6379/0
       STARTUP_DB_BOOTSTRAP_ENABLED: "false"
-      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      PLUGIN_MANAGER_ENABLED: "false"
+      PLUGIN_GATEWAY_URL: http://plugins:8001
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
       GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-60}
       GUNICORN_KEEPALIVE: ${GUNICORN_KEEPALIVE:-5}
       GUNICORN_MAX_REQUESTS: ${GUNICORN_MAX_REQUESTS:-1000}
       GUNICORN_MAX_REQUESTS_JITTER: ${GUNICORN_MAX_REQUESTS_JITTER:-100}
     healthcheck:
       test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).getcode() == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  plugins:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: gateway_server/Dockerfile
+    stop_grace_period: 20s
+    env_file: [.env]
+    expose: ["8001"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      GATEWAY_PORT: "8001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8001/health >/dev/null"]
       interval: 15s
       timeout: 5s
       retries: 5
