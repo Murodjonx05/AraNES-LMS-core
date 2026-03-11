@@ -19,8 +19,12 @@
   - `/health` и `/ready`
   - request/audit logging
   - request id и Redis heartbeat
+- [API Capabilities (backend)](./CAPABILITIES.md)
+  - What the API can do: system, auth, RBAC, i18n, plugins, gateway
 - [Plugin manager architecture](./plugin_manager_architecture.md)
   - API плагинов (`GET/PATCH /api/v1/plugins`), шлюз плагинов, демо-сервисы
+- [Future: Agent / MCP layer](./FUTURE_AGENT_MCP.md)
+  - When adding an agent: MCP or tool layer mapping to existing API
 - [Cache And Revocation](./cache_and_revocation.md)
   - i18n/RBAC Redis cache
   - auth token revocation

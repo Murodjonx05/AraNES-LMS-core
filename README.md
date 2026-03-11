@@ -97,10 +97,13 @@ plugin-provided permission registration.
 
 ### Plugins
 
-- `GET /api/v1/plugins` — list plugin mappings (from gateway if `PLUGIN_GATEWAY_URL` is set, else from DB)
-- `PATCH /api/v1/plugins/{plugin_name}` — enable/disable a plugin (when using DB-backed mappings)
+- `GET /api/v1/plugins` — list plugin mappings (from gateway if `PLUGIN_GATEWAY_URL` is set, else from DB). Optional query `?refresh=true` bypasses gateway list cache.
+- `GET /api/v1/plugins/{plugin_name}` — get one plugin (DB or gateway)
+- `POST /api/v1/plugins` — create plugin mapping (DB mode only)
+- `PATCH /api/v1/plugins/{plugin_name}` — enable/disable a plugin (DB mode only)
+- `DELETE /api/v1/plugins/{plugin_name}` — delete plugin mapping (DB mode only)
 
-Plugin management requires `rbac_can_manage_permissions`. When `PLUGIN_GATEWAY_URL` is set, the core fetches the list from the gateway's `/services` endpoint; otherwise it uses the `plugin_mappings` table.
+Plugin management requires `rbac_can_manage_permissions`. When `PLUGIN_GATEWAY_URL` is set, the core fetches the list from the gateway's `/services` endpoint (cache TTL: `PLUGIN_GATEWAY_CACHE_TTL_SECONDS`, default 2s); otherwise it uses the `plugin_mappings` table. See [docs/CAPABILITIES.md](docs/CAPABILITIES.md) for full capability list.
 
 ### System
 
@@ -417,10 +420,11 @@ CD publishes the container image to `GHCR`:
 
 ## Related Docs
 
-- [docs/doc.md](/run/media/aestra/data/PYTHON/lms/docs/doc.md) — index of how-to and configuration docs
-- [docs/plugin_manager_architecture.md](/run/media/aestra/data/PYTHON/lms/docs/plugin_manager_architecture.md) — plugin and gateway design
-- [docs/release.md](/run/media/aestra/data/PYTHON/lms/docs/release.md)
-- [docs/analysis_report_ru.md](/run/media/aestra/data/PYTHON/lms/docs/analysis_report_ru.md)
+- [docs/doc.md](docs/doc.md) — index of how-to and configuration docs
+- [docs/CAPABILITIES.md](docs/CAPABILITIES.md) — what the API can do (backend capabilities)
+- [docs/plugin_manager_architecture.md](docs/plugin_manager_architecture.md) — plugin and gateway design
+- [docs/release.md](docs/release.md)
+- [docs/analysis_report_ru.md](docs/analysis_report_ru.md)
 
 ## Docker
 
