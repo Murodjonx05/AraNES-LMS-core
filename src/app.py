@@ -95,7 +95,9 @@ def _install_plugin_proxy(app: FastAPI, gateway_base: str) -> None:
         headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
         client: httpx.AsyncClient = getattr(app.state, "plugin_gateway_client", None)
         if client is None:
-            gw_timeout = float(_current_runtime().config.PLUGIN_GATEWAY_HTTP_TIMEOUT_SECONDS)
+            gw_timeout = float(
+                _resolve_app_runtime(request.app, get_default_runtime()).config.PLUGIN_GATEWAY_HTTP_TIMEOUT_SECONDS
+            )
             client = httpx.AsyncClient(timeout=gw_timeout, follow_redirects=False)
             use_shared = False
         else:
