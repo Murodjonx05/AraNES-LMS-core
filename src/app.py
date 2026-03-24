@@ -80,7 +80,12 @@ def _engine_backend_name(engine: object) -> str:
     return "unknown"
 
 
-def _install_plugin_proxy(app: FastAPI, gateway_base: str) -> None:
+def _install_plugin_proxy(
+    app: FastAPI,
+    gateway_base: str,
+    *,
+    gateway_http_timeout_seconds: float,
+) -> None:
     """Register the /plg/{plugin_name}/{path} proxy route that forwards to the gateway."""
 
     @app.api_route(
@@ -95,10 +100,10 @@ def _install_plugin_proxy(app: FastAPI, gateway_base: str) -> None:
         headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
         client: httpx.AsyncClient = getattr(app.state, "plugin_gateway_client", None)
         if client is None:
-            gw_timeout = float(
-                _resolve_app_runtime(request.app, get_default_runtime()).config.PLUGIN_GATEWAY_HTTP_TIMEOUT_SECONDS
+            client = httpx.AsyncClient(
+                timeout=gateway_http_timeout_seconds,
+                follow_redirects=False,
             )
-            client = httpx.AsyncClient(timeout=gw_timeout, follow_redirects=False)
             use_shared = False
         else:
             use_shared = True
@@ -237,7 +242,11 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
 
     gateway_url = runtime.config.PLUGIN_GATEWAY_URL
     if gateway_url:
-        _install_plugin_proxy(app, gateway_url.rstrip("/"))
+        _install_plugin_proxy(
+            app,
+            gateway_url.rstrip("/"),
+            gateway_http_timeout_seconds=float(runtime.config.PLUGIN_GATEWAY_HTTP_TIMEOUT_SECONDS),
+        )
 
     app.include_router(all_routes)
     plugin_router = build_plugin_router()
