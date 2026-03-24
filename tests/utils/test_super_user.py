@@ -185,6 +185,7 @@ async def test_ensure_super_user_from_env_logs_missing_required_variables(
 
     assert created is False
     log_warning.assert_called_once()
-    message = log_warning.call_args.args[0]
-    assert super_user.ENV_BOOTSTRAP_USERNAME in message
-    assert super_user.ENV_BOOTSTRAP_PASSWORD in message
+    wargs = log_warning.call_args.args
+    rendered = wargs[0] % wargs[1:] if len(wargs) > 1 else wargs[0]
+    assert super_user.ENV_BOOTSTRAP_USERNAME in rendered
+    assert super_user.ENV_BOOTSTRAP_PASSWORD in rendered

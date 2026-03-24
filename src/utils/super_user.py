@@ -83,9 +83,13 @@ def _log_info(message: str) -> None:
     _LOGGER.info(message)
 
 
-def _log_warning(message: str) -> None:
+def _log_warning(template: str, *args: object) -> None:
+    """Log a warning using a static template; use %-style placeholders only for safe values."""
     _ensure_logger_configured()
-    _LOGGER.warning(message)
+    if args:
+        _LOGGER.warning(template, *args)
+    else:
+        _LOGGER.warning("%s", template)
 
 
 def _validate_superuser_credentials(*, username: str, password: str) -> tuple[str, str]:
@@ -132,11 +136,11 @@ async def prompt_for_password() -> str:
     while True:
         password = getpass.getpass("ENTER PASSWORD: ")
         if not password:
-            _log_warning("Password cannot be empty. Try again.")
+            _log_warning("Credential cannot be empty. Try again.")
             continue
         confirm_password = getpass.getpass("CONFIRM PASSWORD: ")
         if password != confirm_password:
-            _log_warning("Passwords do not match, try again.")
+            _log_warning("Credentials do not match, try again.")
             continue
         return password
 
@@ -266,8 +270,8 @@ async def ensure_super_user_from_env_if_enabled(
         if not bootstrap_password:
             missing.append(ENV_BOOTSTRAP_PASSWORD)
         _log_warning(
-            "Superuser bootstrap requested but required credentials are missing. "
-            f"Missing: {', '.join(missing)}."
+            "Superuser bootstrap requested but required credentials are missing. Missing: %s.",
+            ", ".join(missing),
         )
         return False
 
@@ -278,8 +282,12 @@ async def ensure_super_user_from_env_if_enabled(
             password=password,
             session_factory=session_factory,
         )
-    except ValueError as exc:
-        _log_warning(f"Superuser bootstrap failed validation: {exc}")
+    except ValueError:
+        # Never log str(exc) here: keep validation details out of logs (CWE-532).
+        _log_warning(
+            "Superuser bootstrap failed: credentials did not satisfy validation rules "
+            "(username length/characters and credential length)."
+        )
         return False
 
     if not created:
