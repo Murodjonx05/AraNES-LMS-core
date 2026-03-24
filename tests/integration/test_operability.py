@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 import json
 import logging
@@ -69,6 +70,46 @@ async def test_ready_hides_raw_database_exception_details(
 
     operability_records = [record for record in caplog.records if record.name == "aranes.operability"]
     assert operability_records
+
+
+@pytest.mark.asyncio
+async def test_ready_times_out_when_database_connection_acquisition_hangs(
+    client: httpx.AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+):
+    runtime = _get_runtime(client)
+    caplog.set_level(logging.ERROR, logger="aranes.operability")
+    original_runtime = runtime.config
+    runtime.config = replace(runtime.config, OPERABILITY_DB_CHECK_TIMEOUT_SECONDS=0.25)
+
+    class _HangingConnection:
+        async def __aenter__(self):
+            await asyncio.sleep(3600)
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _HangingEngine:
+        def connect(self):
+            return _HangingConnection()
+
+    original_engine = runtime.engine
+    runtime.engine = _HangingEngine()  # type: ignore[assignment]
+    try:
+        response = await client.get("/ready", headers={"X-Request-ID": "ready-timeout-test"})
+    finally:
+        runtime.engine = original_engine
+        runtime.config = original_runtime
+
+    assert response.status_code == 503, response.text
+    assert response.headers.get("X-Request-ID") == "ready-timeout-test"
+    assert response.json() == {
+        "status": "not_ready",
+        "database": "error",
+        "redis": {"enabled": False, "status": "disabled"},
+        "detail": "Database readiness check timed out.",
+    }
+    assert any("database readiness check timed out" in record.getMessage() for record in caplog.records)
 
 
 @pytest.mark.asyncio

@@ -24,8 +24,11 @@ from src.utils.structured_logging import get_logger
 
 _RATE_LIMIT_BUCKET_NAMESPACE = "rate_limit"
 _RATE_LIMIT_EXCEEDED_MESSAGE = "Rate limit exceeded"
-_OPERABILITY_LOGGER = get_logger("aranes.operability")
 _ROUTE_SCOPE_CACHE_ATTR = "_fastapi_rate_limit_route_scope_cache"
+
+
+def _operability_logger():
+    return get_logger("aranes.operability")
 
 
 async def _rate_limit_callback(request: Request, response: Response) -> None:
@@ -130,7 +133,7 @@ class _KeyedBucketFactory(BucketFactory):
                 )
             except Exception:
                 cache_service.mark_unavailable()
-                _OPERABILITY_LOGGER.warning("rate limiter redis bootstrap failed; using in-memory backend")
+                _operability_logger().warning("rate limiter redis bootstrap failed; using in-memory backend")
             else:
                 return cls(rate=rate, cache_service=cache_service, script_hash=bootstrap_bucket.script_hash)
         return cls(rate=rate)
@@ -197,7 +200,7 @@ async def _build_dependency_state(runtime: RuntimeContext) -> _RateLimitDependen
         factory = await _KeyedBucketFactory.create_for_runtime(runtime)
     except Exception:
         runtime.cache_service.mark_unavailable()
-        _OPERABILITY_LOGGER.warning("rate limiter falling back to in-memory backend")
+        _operability_logger().warning("rate limiter falling back to in-memory backend")
         factory = _KeyedBucketFactory(
             rate=Rate(
                 runtime.config.RATE_LIMIT_MAX_REQUESTS,
@@ -239,7 +242,7 @@ class RequestRateLimiter:
         except Exception:
             if state.redis_backed:
                 runtime.cache_service.mark_unavailable()
-                _OPERABILITY_LOGGER.warning(
+                _operability_logger().warning(
                     "rate limiter degraded; denying request",
                     request_id=getattr(request.state, "request_id", None),
                     path=request.url.path,

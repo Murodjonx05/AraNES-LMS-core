@@ -41,10 +41,12 @@ DATABASE_URL=sqlite+aiosqlite:///data/db.sqlite3
 - `APP_PROFILING_ENABLED`
 - `APP_FUNCTION_PROFILING_ENABLED`
 
+По умолчанию `APP_PROFILING_ENABLED` и `APP_FUNCTION_PROFILING_ENABLED` выключены (оптимальный путь без обёрток на зависимостях).
+
 Рекомендация:
 
 - для обычного локального запуска profiler лучше держать выключенным
-- для расследования hot path включать его отдельно
+- для расследования hot path включать его отдельно (`APP_PROFILING_ENABLED=true`)
 
 ## Rate Limit
 

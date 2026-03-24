@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import OrderedDict
 from typing import Any
 from urllib.parse import SplitResult, urlsplit
 
@@ -12,9 +13,39 @@ _LOCAL_CLIENT_BASE_URL = "http://inprocess.local"
 _RESOLVER_STATE_KEY = "inprocess_http_resolver"
 _INTERNAL_HOST_ALLOWLIST = frozenset({"inprocess.local"})
 
+_DEFAULT_ROUTE_CACHE_MAX_ENTRIES = 4096
+_DEFAULT_EXTERNAL_TIMEOUT = httpx.Timeout(5.0, connect=2.0)
+_DEFAULT_LOCAL_TIMEOUT = httpx.Timeout(120.0, connect=2.0, pool=5.0)
+
+
+def _resolver_options_from_app(app: FastAPI) -> tuple[int, httpx.Timeout, httpx.Timeout]:
+    runtime = getattr(app.state, "runtime", None)
+    cfg = getattr(runtime, "config", None)
+    if cfg is None:
+        return _DEFAULT_ROUTE_CACHE_MAX_ENTRIES, _DEFAULT_EXTERNAL_TIMEOUT, _DEFAULT_LOCAL_TIMEOUT
+    return (
+        int(cfg.INPROCESS_HTTP_ROUTE_CACHE_MAX_ENTRIES),
+        httpx.Timeout(
+            cfg.INPROCESS_HTTP_EXTERNAL_TIMEOUT_SECONDS,
+            connect=cfg.INPROCESS_HTTP_EXTERNAL_CONNECT_TIMEOUT_SECONDS,
+        ),
+        httpx.Timeout(
+            cfg.INPROCESS_HTTP_LOCAL_READ_TIMEOUT_SECONDS,
+            connect=2.0,
+            pool=5.0,
+        ),
+    )
+
 
 class AppHttpRouteResolver:
-    def __init__(self, app: FastAPI):
+    def __init__(
+        self,
+        app: FastAPI,
+        *,
+        route_cache_maxsize: int = _DEFAULT_ROUTE_CACHE_MAX_ENTRIES,
+        external_timeout: httpx.Timeout | None = None,
+        local_timeout: httpx.Timeout | None = None,
+    ) -> None:
         self._app = app
         self._static_api_routes: set[tuple[str, str]] = set()
         self._dynamic_api_routes: list[tuple[set[str], re.Pattern[str]]] = []
@@ -27,7 +58,10 @@ class AppHttpRouteResolver:
             else:
                 for method in methods:
                     self._static_api_routes.add((method, route.path))
-        self._route_match_cache: dict[tuple[str, str], bool] = {}
+        self._route_cache_maxsize = max(1, route_cache_maxsize)
+        self._route_match_lru: OrderedDict[tuple[str, str], bool] = OrderedDict()
+        self._external_timeout = external_timeout or _DEFAULT_EXTERNAL_TIMEOUT
+        self._local_timeout = local_timeout or _DEFAULT_LOCAL_TIMEOUT
         self._local_client: httpx.AsyncClient | None = None
         self._external_client: httpx.AsyncClient | None = None
 
@@ -37,6 +71,7 @@ class AppHttpRouteResolver:
             client = httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=self._app),
                 base_url=_LOCAL_CLIENT_BASE_URL,
+                timeout=self._local_timeout,
             )
             self._local_client = client
         return client
@@ -44,30 +79,34 @@ class AppHttpRouteResolver:
     def _get_external_client(self) -> httpx.AsyncClient:
         client = self._external_client
         if client is None:
-            client = httpx.AsyncClient()
+            client = httpx.AsyncClient(timeout=self._external_timeout)
             self._external_client = client
         return client
 
     def _is_local_api_path(self, method: str, path: str) -> bool:
+        key = (method.upper(), path)
+        if key in self._route_match_lru:
+            self._route_match_lru.move_to_end(key)
+            return self._route_match_lru[key]
+
         if not path.startswith("/api"):
-            return False
-        cache_key = (method.upper(), path)
-        cached = self._route_match_cache.get(cache_key)
-        if cached is not None:
-            return cached
+            result = False
+        elif key in self._static_api_routes:
+            result = True
+        else:
+            result = False
+            for methods, path_regex in self._dynamic_api_routes:
+                if key[0] not in methods:
+                    continue
+                if path_regex.match(path):
+                    result = True
+                    break
 
-        if cache_key in self._static_api_routes:
-            self._route_match_cache[cache_key] = True
-            return True
-
-        for methods, path_regex in self._dynamic_api_routes:
-            if cache_key[0] not in methods:
-                continue
-            if path_regex.match(path):
-                self._route_match_cache[cache_key] = True
-                return True
-        self._route_match_cache[cache_key] = False
-        return False
+        self._route_match_lru[key] = result
+        self._route_match_lru.move_to_end(key)
+        while len(self._route_match_lru) > self._route_cache_maxsize:
+            self._route_match_lru.popitem(last=False)
+        return result
 
     def _is_local_request(self, method: str, url: str | httpx.URL) -> tuple[bool, SplitResult]:
         parts = urlsplit(str(url))
@@ -164,7 +203,13 @@ def attach_inprocess_http(app: FastAPI) -> AppHttpRouteResolver:
     resolver = getattr(app.state, _RESOLVER_STATE_KEY, None)
     if isinstance(resolver, AppHttpRouteResolver):
         return resolver
-    resolver = AppHttpRouteResolver(app)
+    cache_max, ext_timeout, local_timeout = _resolver_options_from_app(app)
+    resolver = AppHttpRouteResolver(
+        app,
+        route_cache_maxsize=cache_max,
+        external_timeout=ext_timeout,
+        local_timeout=local_timeout,
+    )
     setattr(app.state, _RESOLVER_STATE_KEY, resolver)
     return resolver
 

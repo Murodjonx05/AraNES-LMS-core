@@ -92,14 +92,14 @@ def _ensure_initialized() -> None:
 
 
 def is_profiling_enabled() -> bool:
-    raw = os.getenv(_ENV_PROFILE_ENABLED, "true").strip().lower()
+    raw = os.getenv(_ENV_PROFILE_ENABLED, "false").strip().lower()
     return raw not in {"0", "false", "no", "off"}
 
 
 def is_function_profiling_enabled() -> bool:
     if not is_profiling_enabled():
         return False
-    raw = os.getenv(_ENV_FUNCTION_PROFILE_ENABLED, "true").strip().lower()
+    raw = os.getenv(_ENV_FUNCTION_PROFILE_ENABLED, "false").strip().lower()
     return raw not in {"0", "false", "no", "off"}
 
 
@@ -235,14 +235,18 @@ def profile_function(
     enabled: bool | None = None,
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     def _decorator(func: Callable[P, R]) -> Callable[P, R]:
+        if enabled is not None:
+            want_wrap = bool(enabled)
+        else:
+            want_wrap = is_function_profiling_enabled()
+        if not want_wrap:
+            return func
+
         function_name = name or f"{func.__module__}.{func.__qualname__}"
-        profiling_enabled = is_function_profiling_enabled() if enabled is None else bool(enabled)
         if inspect.iscoroutinefunction(func):
 
             @functools.wraps(func)
             async def _async_wrapper(*args: P.args, **kwargs: P.kwargs):  # type: ignore[misc]
-                if not profiling_enabled:
-                    return await func(*args, **kwargs)  # type: ignore[arg-type]
                 start = time.perf_counter()
                 try:
                     return await func(*args, **kwargs)  # type: ignore[arg-type]
@@ -253,8 +257,6 @@ def profile_function(
 
         @functools.wraps(func)
         def _sync_wrapper(*args: P.args, **kwargs: P.kwargs):  # type: ignore[misc]
-            if not profiling_enabled:
-                return func(*args, **kwargs)
             start = time.perf_counter()
             try:
                 return func(*args, **kwargs)

@@ -145,6 +145,16 @@ class AppConfig:
     REDIS_DEFAULT_TTL_SECONDS: int
     REDIS_HEARTBEAT_ENABLED: bool
     REDIS_HEARTBEAT_SCHEDULE_SECONDS: tuple[int, ...]
+    REDIS_COMMAND_TIMEOUT_SECONDS: float
+    REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS: float
+    REDIS_SOCKET_TIMEOUT_SECONDS: float
+    OPERABILITY_DB_CHECK_TIMEOUT_SECONDS: float
+    INPROCESS_HTTP_ROUTE_CACHE_MAX_ENTRIES: int
+    INPROCESS_HTTP_EXTERNAL_TIMEOUT_SECONDS: float
+    INPROCESS_HTTP_EXTERNAL_CONNECT_TIMEOUT_SECONDS: float
+    INPROCESS_HTTP_LOCAL_READ_TIMEOUT_SECONDS: float
+    PLUGIN_GATEWAY_HTTP_TIMEOUT_SECONDS: float
+    PLUGIN_GATEWAY_OPENAPI_FETCH_TIMEOUT_SECONDS: float
     AUTH_CONFIG: AuthXConfig
 
 
@@ -188,6 +198,16 @@ class _AppSettings(BaseSettings):
         28800,
         43200,
     )
+    REDIS_COMMAND_TIMEOUT_SECONDS: float = 3.0
+    REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS: float = 3.0
+    REDIS_SOCKET_TIMEOUT_SECONDS: float = 5.0
+    OPERABILITY_DB_CHECK_TIMEOUT_SECONDS: float = 2.0
+    INPROCESS_HTTP_ROUTE_CACHE_MAX_ENTRIES: int = 4096
+    INPROCESS_HTTP_EXTERNAL_TIMEOUT_SECONDS: float = 5.0
+    INPROCESS_HTTP_EXTERNAL_CONNECT_TIMEOUT_SECONDS: float = 2.0
+    INPROCESS_HTTP_LOCAL_READ_TIMEOUT_SECONDS: float = 120.0
+    PLUGIN_GATEWAY_HTTP_TIMEOUT_SECONDS: float = 30.0
+    PLUGIN_GATEWAY_OPENAPI_FETCH_TIMEOUT_SECONDS: float = 10.0
 
     @field_validator(
         "JWT_SECRET_KEY",
@@ -292,6 +312,83 @@ class _AppSettings(BaseSettings):
             for item in value
         )
 
+    @field_validator("REDIS_COMMAND_TIMEOUT_SECONDS", mode="after")
+    @classmethod
+    def _validate_redis_command_timeout(cls, value: float) -> float:
+        if value < 0.5 or value > 60.0:
+            raise ValueError("REDIS_COMMAND_TIMEOUT_SECONDS must be between 0.5 and 60.0 seconds.")
+        return value
+
+    @field_validator("REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS", mode="after")
+    @classmethod
+    def _validate_redis_socket_connect_timeout(cls, value: float) -> float:
+        if value < 0.5 or value > 120.0:
+            raise ValueError("REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS must be between 0.5 and 120.0 seconds.")
+        return value
+
+    @field_validator("REDIS_SOCKET_TIMEOUT_SECONDS", mode="after")
+    @classmethod
+    def _validate_redis_socket_timeout(cls, value: float) -> float:
+        if value < 0.5 or value > 120.0:
+            raise ValueError("REDIS_SOCKET_TIMEOUT_SECONDS must be between 0.5 and 120.0 seconds.")
+        return value
+
+    @field_validator("OPERABILITY_DB_CHECK_TIMEOUT_SECONDS", mode="after")
+    @classmethod
+    def _validate_operability_db_check_timeout(cls, value: float) -> float:
+        if value < 0.25 or value > 60.0:
+            raise ValueError("OPERABILITY_DB_CHECK_TIMEOUT_SECONDS must be between 0.25 and 60.0 seconds.")
+        return value
+
+    @field_validator("INPROCESS_HTTP_ROUTE_CACHE_MAX_ENTRIES", mode="after")
+    @classmethod
+    def _validate_inprocess_route_cache(cls, value: int) -> int:
+        return _validate_int_range(
+            "INPROCESS_HTTP_ROUTE_CACHE_MAX_ENTRIES",
+            value,
+            minimum=256,
+            maximum=131072,
+        )
+
+    @field_validator("INPROCESS_HTTP_EXTERNAL_TIMEOUT_SECONDS", mode="after")
+    @classmethod
+    def _validate_inprocess_external_timeout(cls, value: float) -> float:
+        if value < 1.0 or value > 300.0:
+            raise ValueError("INPROCESS_HTTP_EXTERNAL_TIMEOUT_SECONDS must be between 1.0 and 300.0 seconds.")
+        return value
+
+    @field_validator("INPROCESS_HTTP_EXTERNAL_CONNECT_TIMEOUT_SECONDS", mode="after")
+    @classmethod
+    def _validate_inprocess_external_connect_timeout(cls, value: float) -> float:
+        if value < 0.5 or value > 60.0:
+            raise ValueError(
+                "INPROCESS_HTTP_EXTERNAL_CONNECT_TIMEOUT_SECONDS must be between 0.5 and 60.0 seconds."
+            )
+        return value
+
+    @field_validator("INPROCESS_HTTP_LOCAL_READ_TIMEOUT_SECONDS", mode="after")
+    @classmethod
+    def _validate_inprocess_local_read_timeout(cls, value: float) -> float:
+        if value < 5.0 or value > 600.0:
+            raise ValueError("INPROCESS_HTTP_LOCAL_READ_TIMEOUT_SECONDS must be between 5.0 and 600.0 seconds.")
+        return value
+
+    @field_validator("PLUGIN_GATEWAY_HTTP_TIMEOUT_SECONDS", mode="after")
+    @classmethod
+    def _validate_plugin_gateway_http_timeout(cls, value: float) -> float:
+        if value < 5.0 or value > 600.0:
+            raise ValueError("PLUGIN_GATEWAY_HTTP_TIMEOUT_SECONDS must be between 5.0 and 600.0 seconds.")
+        return value
+
+    @field_validator("PLUGIN_GATEWAY_OPENAPI_FETCH_TIMEOUT_SECONDS", mode="after")
+    @classmethod
+    def _validate_plugin_gateway_openapi_fetch_timeout(cls, value: float) -> float:
+        if value < 2.0 or value > 120.0:
+            raise ValueError(
+                "PLUGIN_GATEWAY_OPENAPI_FETCH_TIMEOUT_SECONDS must be between 2.0 and 120.0 seconds."
+            )
+        return value
+
     @model_validator(mode="after")
     def _apply_runtime_defaults(self) -> "_AppSettings":
         if not self.JWT_SECRET_KEY:
@@ -348,6 +445,16 @@ class _AppSettings(BaseSettings):
             REDIS_DEFAULT_TTL_SECONDS=self.REDIS_DEFAULT_TTL_SECONDS,
             REDIS_HEARTBEAT_ENABLED=self.REDIS_HEARTBEAT_ENABLED,
             REDIS_HEARTBEAT_SCHEDULE_SECONDS=self.REDIS_HEARTBEAT_SCHEDULE_SECONDS,
+            REDIS_COMMAND_TIMEOUT_SECONDS=self.REDIS_COMMAND_TIMEOUT_SECONDS,
+            REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS=self.REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS,
+            REDIS_SOCKET_TIMEOUT_SECONDS=self.REDIS_SOCKET_TIMEOUT_SECONDS,
+            OPERABILITY_DB_CHECK_TIMEOUT_SECONDS=self.OPERABILITY_DB_CHECK_TIMEOUT_SECONDS,
+            INPROCESS_HTTP_ROUTE_CACHE_MAX_ENTRIES=self.INPROCESS_HTTP_ROUTE_CACHE_MAX_ENTRIES,
+            INPROCESS_HTTP_EXTERNAL_TIMEOUT_SECONDS=self.INPROCESS_HTTP_EXTERNAL_TIMEOUT_SECONDS,
+            INPROCESS_HTTP_EXTERNAL_CONNECT_TIMEOUT_SECONDS=self.INPROCESS_HTTP_EXTERNAL_CONNECT_TIMEOUT_SECONDS,
+            INPROCESS_HTTP_LOCAL_READ_TIMEOUT_SECONDS=self.INPROCESS_HTTP_LOCAL_READ_TIMEOUT_SECONDS,
+            PLUGIN_GATEWAY_HTTP_TIMEOUT_SECONDS=self.PLUGIN_GATEWAY_HTTP_TIMEOUT_SECONDS,
+            PLUGIN_GATEWAY_OPENAPI_FETCH_TIMEOUT_SECONDS=self.PLUGIN_GATEWAY_OPENAPI_FETCH_TIMEOUT_SECONDS,
             AUTH_CONFIG=auth_config,
         )
 

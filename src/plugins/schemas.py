@@ -14,5 +14,12 @@ class PluginMappingRead(BaseModel):
     running: bool
 
 
+class PluginMappingCreate(BaseModel):
+    plugin_name: str
+    service_name: str | None = None
+    mount_prefix: str | None = None
+    enabled: bool = True
+
+
 class PluginEnabledPatch(BaseModel):
     enabled: bool

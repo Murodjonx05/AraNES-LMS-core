@@ -8,13 +8,26 @@ from src.utils.structured_logging import get_logger
 
 _AUDITED_PREFIXES = ("/api/v1/rbac", "/api/v1/i18n", "/api/v1/plugins")
 _AUDITED_EXACT_PATHS = frozenset({"/api/v1/auth/reset"})
+_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _CURRENT_ACTOR_STATE_KEY = "_current_actor"
 _CURRENT_USER_ROLE_STATE_KEY = "_current_user_with_role"
 _ACTOR_SUBJECT_WARNING_STATE_KEY = "_actor_subject_warning_emitted"
-REQUEST_LOGGER = get_logger("aranes.request")
-AUDIT_LOGGER = get_logger("aranes.audit")
-OPERABILITY_LOGGER = get_logger("aranes.operability")
-SECURITY_LOGGER = get_logger("aranes.security")
+
+
+def request_logger():
+    return get_logger("aranes.request")
+
+
+def audit_logger():
+    return get_logger("aranes.audit")
+
+
+def operability_logger():
+    return get_logger("aranes.operability")
+
+
+def security_logger():
+    return get_logger("aranes.security")
 
 
 def _payload_claim(payload: object, key: str) -> object | None:
@@ -94,9 +107,17 @@ def extract_actor_subject(request, runtime: RuntimeContext) -> str | None:
 
 
 def should_audit_request(path: str, method: str) -> bool:
-    if method.upper() in {"GET", "HEAD", "OPTIONS"}:
+    if method in _READ_METHODS or method.upper() in _READ_METHODS:
         return False
     return path in _AUDITED_EXACT_PATHS or path.startswith(_AUDITED_PREFIXES)
+
+
+def needs_request_observation(runtime: RuntimeContext, method: str, path: str) -> bool:
+    if runtime.config.REQUEST_LOG_ENABLED:
+        return True
+    if not runtime.config.AUDIT_LOG_ENABLED:
+        return False
+    return should_audit_request(path, method)
 
 
 def client_host(request) -> str:
@@ -113,7 +134,7 @@ def apply_request_id(response: JSONResponse, request_id: str):
 def warn_actor_subject_extraction_failed(request, *, error_type: str | None = None) -> None:
     if getattr(request.state, _ACTOR_SUBJECT_WARNING_STATE_KEY, False):
         return
-    SECURITY_LOGGER.warning(
+    security_logger().warning(
         "actor subject extraction failed",
         request_id=getattr(request.state, "request_id", None),
         path=getattr(getattr(request, "url", None), "path", None),
@@ -140,7 +161,7 @@ def record_request_observation(
 
     actor_subject = extract_actor_subject(request, runtime)
     if should_log_request:
-        REQUEST_LOGGER.info(
+        request_logger().info(
             "request",
             request_id=request_id,
             method=method,
@@ -151,7 +172,7 @@ def record_request_observation(
             actor=actor_subject,
         )
     if should_log_audit:
-        AUDIT_LOGGER.info(
+        audit_logger().info(
             "audit",
             request_id=request_id,
             method=method,

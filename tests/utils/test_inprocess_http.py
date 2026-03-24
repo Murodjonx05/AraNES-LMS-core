@@ -220,6 +220,45 @@ async def test_internal_client_forwards_authorization_and_preserves_explicit_hea
 
 
 @pytest.mark.asyncio
+async def test_resolver_route_match_cache_is_bounded():
+    app = _build_app()
+    resolver = AppHttpRouteResolver(app, route_cache_maxsize=8)
+    for i in range(24):
+        resolver._is_local_api_path("GET", f"/api/miss/{i}")
+    assert len(resolver._route_match_lru) == 8
+    assert ("GET", "/api/miss/0") not in resolver._route_match_lru
+    assert ("GET", "/api/miss/23") in resolver._route_match_lru
+
+
+@pytest.mark.asyncio
+async def test_resolver_route_match_cache_keeps_recently_used_entries():
+    app = _build_app()
+    resolver = AppHttpRouteResolver(app, route_cache_maxsize=3)
+
+    resolver._is_local_api_path("GET", "/api/miss/1")
+    resolver._is_local_api_path("GET", "/api/miss/2")
+    resolver._is_local_api_path("GET", "/api/miss/3")
+    resolver._is_local_api_path("GET", "/api/miss/1")
+    resolver._is_local_api_path("GET", "/api/miss/4")
+
+    assert ("GET", "/api/miss/1") in resolver._route_match_lru
+    assert ("GET", "/api/miss/2") not in resolver._route_match_lru
+    assert ("GET", "/api/miss/4") in resolver._route_match_lru
+
+
+def test_resolver_uses_hardened_default_external_timeout():
+    app = _build_app()
+    resolver = AppHttpRouteResolver(app)
+
+    timeout = resolver._external_timeout
+
+    assert timeout.connect == 2.0
+    assert timeout.read == 5.0
+    assert timeout.write == 5.0
+    assert timeout.pool == 5.0
+
+
+@pytest.mark.asyncio
 async def test_resolver_raises_for_relative_non_local_url():
     app = _build_app()
     resolver = attach_inprocess_http(app)

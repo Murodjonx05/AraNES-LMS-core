@@ -23,6 +23,7 @@ from src.auth.revocation import (
     FALLBACK_RAW_TOKEN_TTL,
     _TOKEN_REVOCATION_CACHE_MAX_ENTRIES as _REVOCATION_CACHE_LIMIT,
     _build_local_revocation_cache_key,
+    _cache_revocation_status,
     _build_raw_token_revocation_key,
     _build_revocation_cache_key,
     _extract_jti_and_exp,
@@ -83,22 +84,6 @@ async def _store_revoked_jti(engine: AsyncEngine, jti: str, expires_at: datetime
         await conn.execute(_revoked_token_jtis.insert().values(jti=jti, expires_at=expires_at))
 
 
-def _cache_revocation_status(*, jti: str, revoked: bool, now: datetime, expires_at: datetime) -> None:
-    from src.auth import revocation as _revocation
-
-    cache_until = expires_at if revoked else min(
-        expires_at,
-        now + timedelta(seconds=_revocation._get_token_revocation_cache_ttl_seconds()),
-    )
-    _token_revocation_cache[jti] = (revoked, cache_until)
-    if len(_token_revocation_cache) > _TOKEN_REVOCATION_CACHE_MAX_ENTRIES:
-        for key, (_, valid_until) in list(_token_revocation_cache.items()):
-            if valid_until <= now:
-                _token_revocation_cache.pop(key, None)
-        while len(_token_revocation_cache) > _TOKEN_REVOCATION_CACHE_MAX_ENTRIES:
-            _token_revocation_cache.pop(next(iter(_token_revocation_cache)))
-
-
 def _resolve_revocation_identity(token: str, *, security: AuthX) -> tuple[str, datetime]:
     try:
         return _extract_jti_and_exp(token, security=security)
@@ -126,6 +111,7 @@ async def is_token_revoked(
     if cached is not None:
         cached_revoked, cached_until = cached
         if cached_until > now:
+            _token_revocation_cache.move_to_end(local_cache_key)
             return cached_revoked
         _token_revocation_cache.pop(local_cache_key, None)
 
