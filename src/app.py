@@ -1,5 +1,7 @@
+import asyncio
 import authx.exceptions as authx_exceptions
 import time
+from functools import lru_cache
 from uuid import uuid4
 
 import httpx
@@ -17,9 +19,10 @@ from src.http.constants import HOP_BY_HOP_HEADERS
 from src.http.errors import build_internal_server_error_response, build_jwt_decode_error_response
 from src.plugins.registry import build_plugin_router
 from src.http.observability import (
-    OPERABILITY_LOGGER,
     apply_request_id,
     client_host,
+    needs_request_observation,
+    operability_logger,
     record_request_observation,
 )
 from src.http.openapi import install_bearer_openapi
@@ -27,6 +30,14 @@ from src.runtime import RuntimeContext, get_default_runtime
 from src.startup import lifespan
 from src.utils.inprocess_http import attach_inprocess_http
 from src.utils.structured_logging import setup_logging
+
+
+def _operability_request_id(request: Request) -> str:
+    return (
+        getattr(request.state, "request_id", None)
+        or request.headers.get("x-request-id")
+        or uuid4().hex
+    )
 
 
 async def _build_redis_health(runtime: RuntimeContext) -> dict[str, object]:
@@ -84,7 +95,8 @@ def _install_plugin_proxy(app: FastAPI, gateway_base: str) -> None:
         headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
         client: httpx.AsyncClient = getattr(app.state, "plugin_gateway_client", None)
         if client is None:
-            client = httpx.AsyncClient(timeout=30.0, follow_redirects=False)
+            gw_timeout = float(_current_runtime().config.PLUGIN_GATEWAY_HTTP_TIMEOUT_SECONDS)
+            client = httpx.AsyncClient(timeout=gw_timeout, follow_redirects=False)
             use_shared = False
         else:
             use_shared = True
@@ -142,17 +154,16 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
     async def ready(request: Request):
         active_runtime = _current_runtime()
         redis = await _build_redis_health(active_runtime)
+        db_timeout = float(active_runtime.config.OPERABILITY_DB_CHECK_TIMEOUT_SECONDS)
         try:
-            async with active_runtime.engine.connect() as conn:
-                await conn.execute(text("SELECT 1"))
-        except Exception as exc:
-            request_id = (
-                getattr(request.state, "request_id", None)
-                or request.headers.get("x-request-id")
-                or uuid4().hex
-            )
-            OPERABILITY_LOGGER.exception(
-                "database readiness check failed",
+            async with asyncio.timeout(db_timeout):
+                async with active_runtime.engine.connect() as conn:
+                    await conn.execute(text("SELECT 1"))
+        except (asyncio.TimeoutError, Exception) as exc:
+            request_id = _operability_request_id(request)
+            timed_out = isinstance(exc, asyncio.TimeoutError)
+            operability_logger().exception(
+                "database readiness check timed out" if timed_out else "database readiness check failed",
                 request_id=request_id,
                 error_type=exc.__class__.__name__,
             )
@@ -162,7 +173,11 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
                     "status": "not_ready",
                     "database": "error",
                     "redis": redis,
-                    "detail": "Database is unavailable.",
+                    "detail": (
+                        "Database readiness check timed out."
+                        if timed_out
+                        else "Database is unavailable."
+                    ),
                 },
             )
         return {
@@ -180,7 +195,6 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
         request_id = request.headers.get("x-request-id") or uuid4().hex
         request.state.request_id = request_id
         start = time.perf_counter()
-        client_host_value = client_host(request)
 
         try:
             response = await call_next(request)
@@ -190,16 +204,17 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
         apply_request_id(response, request_id)
 
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        record_request_observation(
-            request=request,
-            runtime=active_runtime,
-            method=method,
-            path=path,
-            status_code=status_code,
-            elapsed_ms=elapsed_ms,
-            request_id=request_id,
-            client_host_value=client_host_value,
-        )
+        if needs_request_observation(active_runtime, method, path):
+            record_request_observation(
+                request=request,
+                runtime=active_runtime,
+                method=method,
+                path=path,
+                status_code=status_code,
+                elapsed_ms=elapsed_ms,
+                request_id=request_id,
+                client_host_value=client_host(request),
+            )
         return response
 
     trusted_origins = runtime.config.CORS.get("ALLOW_ORIGINS") or []
@@ -241,7 +256,20 @@ def create_app(runtime: RuntimeContext | None = None) -> FastAPI:
     return app
 
 
-app = create_app()
+@lru_cache(maxsize=1)
+def get_app() -> FastAPI:
+    return create_app()
+
+
+class _LazyASGIApp:
+    async def __call__(self, scope, receive, send) -> None:
+        await get_app()(scope, receive, send)
+
+    def __getattr__(self, name: str):
+        return getattr(get_app(), name)
+
+
+app = _LazyASGIApp()
 
 if __name__ == "__main__":
     import uvicorn

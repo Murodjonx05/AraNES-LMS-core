@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
@@ -17,8 +18,8 @@ _TOKEN_REVOCATION_CACHE_MAX_ENTRIES = 4096
 _TOKEN_IDENTITY_CACHE_MAX_ENTRIES = 2048
 _REVOCATION_CACHE_KEY_PREFIX = "auth:revoked"
 
-_token_revocation_cache: dict[str, tuple[bool, datetime]] = {}
-_token_identity_cache: dict[str, tuple[str, datetime]] = {}
+_token_revocation_cache: OrderedDict[str, tuple[bool, datetime]] = OrderedDict()
+_token_identity_cache: OrderedDict[str, tuple[str, datetime]] = OrderedDict()
 
 _revocation_metadata = MetaData()
 _revoked_token_jtis = Table(
@@ -59,12 +60,13 @@ def _cache_revocation_status(*, jti: str, revoked: bool, now: datetime, expires_
         now + timedelta(seconds=_get_token_revocation_cache_ttl_seconds()),
     )
     _token_revocation_cache[jti] = (revoked, cache_until)
+    _token_revocation_cache.move_to_end(jti)
     if len(_token_revocation_cache) > _TOKEN_REVOCATION_CACHE_MAX_ENTRIES:
         for key, (_, valid_until) in list(_token_revocation_cache.items()):
             if valid_until <= now:
                 _token_revocation_cache.pop(key, None)
         while len(_token_revocation_cache) > _TOKEN_REVOCATION_CACHE_MAX_ENTRIES:
-            _token_revocation_cache.pop(next(iter(_token_revocation_cache)))
+            _token_revocation_cache.popitem(last=False)
 
 
 def _build_raw_token_revocation_key(token: str) -> str:
@@ -146,6 +148,7 @@ def _extract_jti_and_exp(token: str, *, security: AuthX) -> tuple[str, datetime]
     if cached_identity is not None:
         token_jti, token_exp = cached_identity
         if token_exp > now:
+            _token_identity_cache.move_to_end(cache_key)
             return token_jti, token_exp
         _token_identity_cache.pop(cache_key, None)
 
@@ -176,8 +179,9 @@ def _extract_jti_and_exp(token: str, *, security: AuthX) -> tuple[str, datetime]
         normalized_exp = _normalize_expiry(token_exp)
         token_jti_str = str(token_jti)
         _token_identity_cache[cache_key] = (token_jti_str, normalized_exp)
-        if len(_token_identity_cache) > _TOKEN_IDENTITY_CACHE_MAX_ENTRIES:
-            _token_identity_cache.pop(next(iter(_token_identity_cache)))
+        _token_identity_cache.move_to_end(cache_key)
+        while len(_token_identity_cache) > _TOKEN_IDENTITY_CACHE_MAX_ENTRIES:
+            _token_identity_cache.popitem(last=False)
         return token_jti_str, normalized_exp
     except Exception as exc:
         raise ValueError("Token is not a decodable JWT for jti-based revocation.") from exc

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from unittest.mock import patch
 
 from src.auth import passwords
+from src.auth import revocation
 from src.auth import service
 
 
@@ -240,6 +241,21 @@ async def test_legacy_revoked_token_expires(
     ) is False
 
 
+def test_cache_revocation_status_uses_lru_eviction(monkeypatch: pytest.MonkeyPatch):
+    now = service.datetime(2026, 1, 1, tzinfo=service.timezone.utc)
+    expires_at = now + service.timedelta(minutes=5)
+    service._token_revocation_cache.clear()
+    monkeypatch.setattr(revocation, "_TOKEN_REVOCATION_CACHE_MAX_ENTRIES", 3)
+
+    service._cache_revocation_status(jti="a", revoked=False, now=now, expires_at=expires_at)
+    service._cache_revocation_status(jti="b", revoked=False, now=now, expires_at=expires_at)
+    service._cache_revocation_status(jti="c", revoked=False, now=now, expires_at=expires_at)
+    service._token_revocation_cache.move_to_end("a")
+    service._cache_revocation_status(jti="d", revoked=False, now=now, expires_at=expires_at)
+
+    assert list(service._token_revocation_cache) == ["c", "a", "d"]
+
+
 def test_extract_jti_and_exp_accepts_numeric_exp_timestamp():
     class _Payload:
         jti = "test-jti"
@@ -304,7 +320,7 @@ def test_password_hasher_clamps_weak_argon2_env_values_outside_pytest(monkeypatc
 
 
 def test_revocation_cache_remains_bounded_for_non_expired_entries(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(service, "_TOKEN_REVOCATION_CACHE_MAX_ENTRIES", 4)
+    monkeypatch.setattr(revocation, "_TOKEN_REVOCATION_CACHE_MAX_ENTRIES", 4)
     now = service._utc_now()
     expires_at = now + service.timedelta(seconds=30)
 

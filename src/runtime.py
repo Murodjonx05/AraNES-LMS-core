@@ -45,6 +45,9 @@ def build_runtime(config: AppConfig, in_memory: bool = False) -> RuntimeContext:
                 (60, 600, 1200, 3600, 14400, 28800, 43200),
             )
         ),
+        command_timeout_seconds=float(getattr(config, "REDIS_COMMAND_TIMEOUT_SECONDS", 3.0)),
+        socket_connect_timeout_seconds=float(getattr(config, "REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS", 3.0)),
+        socket_timeout_seconds=float(getattr(config, "REDIS_SOCKET_TIMEOUT_SECONDS", 5.0)),
     )
     runtime = RuntimeContext(
         config=config,

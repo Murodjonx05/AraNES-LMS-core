@@ -40,6 +40,9 @@ class RedisCacheService:
     default_ttl_seconds: int
     heartbeat_enabled: bool
     heartbeat_schedule_seconds: tuple[int, ...]
+    command_timeout_seconds: float = 3.0
+    socket_connect_timeout_seconds: float = 3.0
+    socket_timeout_seconds: float = 5.0
     client: Redis | None = field(init=False, default=None)
     _available: bool = field(init=False, default=False)
     _heartbeat_task: asyncio.Task | None = field(init=False, default=None)
@@ -52,7 +55,12 @@ class RedisCacheService:
             self.enabled = False
             return
         try:
-            self.client = Redis.from_url(self.redis_url, decode_responses=True)
+            self.client = Redis.from_url(
+                self.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=self.socket_connect_timeout_seconds,
+                socket_timeout=self.socket_timeout_seconds,
+            )
         except Exception:
             _CACHE_LOGGER.warning("redis_client_unavailable", redis_url=self.redis_url)
             self.enabled = False
@@ -69,7 +77,7 @@ class RedisCacheService:
             self._available = False
             return False
         try:
-            pong = await self.client.ping()
+            pong = await asyncio.wait_for(self.client.ping(), timeout=self.command_timeout_seconds)
         except Exception:
             self._available = False
             return False
