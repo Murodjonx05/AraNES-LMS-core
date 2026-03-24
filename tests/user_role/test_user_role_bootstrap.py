@@ -65,6 +65,36 @@ async def test_seed_roles_if_missing_rejects_split_default_role_mapping(
 
 
 @pytest.mark.asyncio
+async def test_seed_roles_if_missing_accepts_plugin_role_with_db_assigned_id(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """PLUGIN uses (None, ...) in defaults so the row may have any primary key."""
+    existing_roles = [
+        SimpleNamespace(id=rid, name=name, title_key=tk, permissions={})
+        for rid, name, tk in DEFAULT_ROLES
+        if rid is not None
+    ]
+    existing_roles.append(
+        SimpleNamespace(id=7, name="PLUGIN", title_key="role.plugin.title", permissions={})
+    )
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=_ScalarResult(existing_roles)),
+        add_all=Mock(),
+        add=Mock(),
+        dirty=False,
+        commit=AsyncMock(),
+    )
+    init_permissions_mock = AsyncMock()
+    monkeypatch.setattr(bootstrap.RBAC_SERVICE, "init_role_permissions_if_missing", init_permissions_mock)
+
+    created = await bootstrap.seed_roles_if_missing(session, commit=False)
+
+    assert created == 0
+    session.add_all.assert_not_called()
+    init_permissions_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_seed_roles_if_missing_reuses_loaded_roles_for_permission_backfill():
     execute_calls = {"count": 0}
 

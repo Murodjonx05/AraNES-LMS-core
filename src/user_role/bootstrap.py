@@ -20,6 +20,8 @@ RBAC_SERVICE = RBACService(
     }
 )
 _DEFAULT_ROLE_IDS = tuple(role_id for role_id, _, _ in DEFAULT_ROLES)
+# Exclude None so Role.id.in_(...) is valid SQL (IN must not contain NULL for portable semantics).
+_KNOWN_DEFAULT_ROLE_IDS = tuple(rid for rid in _DEFAULT_ROLE_IDS if rid is not None)
 _DEFAULT_ROLE_NAMES = tuple(role_name for _, role_name, _ in DEFAULT_ROLES)
 
 
@@ -51,11 +53,16 @@ def _resolve_default_role_match(
     if existing is None:
         return None
 
-    if getattr(existing, "id", None) != role_id or getattr(existing, "name", None) != role_name:
+    existing_id = getattr(existing, "id", None)
+    existing_name = getattr(existing, "name", None)
+    # None id in DEFAULT_ROLES means "any stable primary key" (avoid fixed-id collisions).
+    id_mismatch = role_id is not None and existing_id != role_id
+    name_mismatch = existing_name != role_name
+    if id_mismatch or name_mismatch:
         raise RuntimeError(
             "Default role drift detected. "
             f"Expected role ({role_id}, '{role_name}') but found "
-            f"({getattr(existing, 'id', None)}, '{getattr(existing, 'name', None)}')."
+            f"({existing_id}, '{existing_name}')."
         )
 
     return existing
@@ -71,7 +78,7 @@ async def seed_roles_if_missing(session: AsyncSession, *, commit: bool = True) -
     # Only default-role candidates matter for seeding/drift checks.
     result = await session.execute(
         select(Role).where(
-            (Role.id.in_(_DEFAULT_ROLE_IDS)) | (Role.name.in_(_DEFAULT_ROLE_NAMES))
+            (Role.id.in_(_KNOWN_DEFAULT_ROLE_IDS)) | (Role.name.in_(_DEFAULT_ROLE_NAMES))
         )
     )
     existing_roles = list(result.scalars().all())
