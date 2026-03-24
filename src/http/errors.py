@@ -7,8 +7,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from src.http.observability import (
-    OPERABILITY_LOGGER,
     apply_request_id,
+    operability_logger,
     warn_actor_subject_extraction_failed,
 )
 
@@ -23,7 +23,7 @@ def resolve_request_id(request: Request) -> str:
 
 def build_internal_server_error_response(request: Request, exc: Exception):
     request_id = resolve_request_id(request)
-    OPERABILITY_LOGGER.exception(
+    operability_logger().exception(
         "unhandled request exception",
         request_id=request_id,
         path=request.url.path,

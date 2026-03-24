@@ -17,11 +17,11 @@ from src.utils.inprocess_http import close_inprocess_http
 logger = logging.getLogger(__name__)
 
 
-async def _fetch_gateway_openapi(gateway_url: str) -> dict | None:
+async def _fetch_gateway_openapi(gateway_url: str, *, fetch_timeout_seconds: float) -> dict | None:
     base = gateway_url.rstrip("/")
     url = f"{base}/openapi.json"
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=fetch_timeout_seconds) as client:
             resp = await client.get(url)
             if resp.status_code == 200:
                 return resp.json()
@@ -76,8 +76,16 @@ async def lifespan(app: FastAPI):
         if runtime is not None:
             gateway_url = getattr(runtime.config, "PLUGIN_GATEWAY_URL", None)
             if gateway_url:
-                app.state.gateway_openapi_schema = await _fetch_gateway_openapi(gateway_url)
-                app.state.plugin_gateway_client = httpx.AsyncClient(timeout=30.0, follow_redirects=False)
+                app.state.gateway_openapi_schema = await _fetch_gateway_openapi(
+                    gateway_url,
+                    fetch_timeout_seconds=float(
+                        runtime.config.PLUGIN_GATEWAY_OPENAPI_FETCH_TIMEOUT_SECONDS
+                    ),
+                )
+                app.state.plugin_gateway_client = httpx.AsyncClient(
+                    timeout=float(runtime.config.PLUGIN_GATEWAY_HTTP_TIMEOUT_SECONDS),
+                    follow_redirects=False,
+                )
             else:
                 app.state.gateway_openapi_schema = None
                 app.state.plugin_gateway_client = None
